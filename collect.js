@@ -270,9 +270,18 @@ async function collectUsdKrwChart() {
   try {
     const data = await fetchJSON('https://query1.finance.yahoo.com/v8/finance/chart/KRW=X?interval=1d&range=3mo', 12000);
     const result = data.chart.result[0];
-    const closes = (result.indicators.quote[0].close || []).filter(v => v != null);
-    const timestamps = result.timestamp || [];
-    return { labels: timestamps.map(t => { const d = new Date(t * 1000); return `${d.getMonth() + 1}/${d.getDate()}`; }), values: closes.map(v => Math.round(v * 100) / 100), live: true };
+    const rawCloses = result.indicators.quote[0].close || [];
+    const rawTimestamps = result.timestamp || [];
+    // null 값을 제거하면서 labels/values 동기화
+    const labels = [], values = [];
+    for (let i = 0; i < rawCloses.length && i < rawTimestamps.length; i++) {
+      if (rawCloses[i] != null) {
+        const d = new Date(rawTimestamps[i] * 1000);
+        labels.push(`${d.getMonth() + 1}/${d.getDate()}`);
+        values.push(Math.round(rawCloses[i] * 100) / 100);
+      }
+    }
+    return { labels, values, live: true };
   } catch (e) { console.warn('[Collect] USD/KRW 차트 실패:', e.message); return null; }
 }
 
@@ -300,6 +309,7 @@ async function collectSentiments() {
     { name: '현대차', code: '005380' }, { name: 'KB금융', code: '105560' }, { name: '카카오', code: '035720' },
   ];
   const results = [];
+  const allPosts = []; // 커뮤니티 글 목록 (콘텐츠 허브용)
   for (const t of targets) {
     try {
       const posts = await collectNaverDiscussion(t.code);
@@ -311,11 +321,16 @@ async function collectSentiments() {
         });
         const total = posts.length || 1;
         results.push({ stock: t.name, positive: Math.round(pos / total * 100), neutral: Math.round(neu / total * 100), negative: Math.round(neg / total * 100), mentions: posts.length, live: true });
+        // 상위 글 저장
+        allPosts.push(...posts.slice(0, 5).map(p => ({ ...p, stock: t.name })));
       }
       await sleep(500);
     } catch (e) { /* skip */ }
   }
-  return results.length > 0 ? results : null;
+  return {
+    sentiments: results.length > 0 ? results : null,
+    communityPosts: allPosts.length > 0 ? allPosts : null,
+  };
 }
 
 async function collectBaseRates() {
@@ -398,13 +413,15 @@ async function main() {
   await sleep(2000);
   const etfs = await collectETFs();
 
-  // Phase 4: 감성 분석
+  // Phase 4: 감성 분석 + 커뮤니티 글
   await sleep(2000);
-  const sentiments = await collectSentiments();
+  const sentimentResult = await collectSentiments();
+  const sentiments = sentimentResult.sentiments;
+  const communityPosts = sentimentResult.communityPosts;
 
   // 결과 저장
   const data = {
-    indices, exchangeRates, news, briefing, stocks, etfs, trends, calendar, youtube, sentiments, usdKrwChart, baseRates,
+    indices, exchangeRates, news, briefing, stocks, etfs, trends, calendar, youtube, sentiments, communityPosts, usdKrwChart, baseRates,
     updatedAt: new Date().toISOString(),
   };
 
