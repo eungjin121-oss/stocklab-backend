@@ -68,7 +68,7 @@ async function analyzeWithFinBert(texts) {
     try {
       const ctrl = new AbortController();
       const tid = setTimeout(() => ctrl.abort(), 30000);
-      const res = await fetch('https://api-inference.huggingface.co/models/snunlp/KR-FinBert-SC', {
+      const res = await fetch('https://router.huggingface.co/models/snunlp/KR-FinBert-SC', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ inputs: texts }),
