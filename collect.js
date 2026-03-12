@@ -343,8 +343,10 @@ async function collectBaseRates() {
     // 미국 금리: FRED CSV (API 키 불필요)
     try {
       const startDate = `${now.getFullYear() - 2}-01-01`;
-      const csvUpper = await fetchText(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFEDTARU&cosd=${startDate}`, 30000);
-      const csvLower = await fetchText(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFEDTARL&cosd=${startDate}`, 30000);
+      const [csvUpper, csvLower] = await Promise.all([
+        fetchText(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFEDTARU&cosd=${startDate}`, 60000),
+        fetchText(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFEDTARL&cosd=${startDate}`, 60000),
+      ]);
       const parseCSV = (csv) => csv.trim().split('\n').slice(1).map(line => { const [date, val] = line.split(','); return { date, value: parseFloat(val) }; }).filter(r => !isNaN(r.value));
       const upperRows = parseCSV(csvUpper);
       const lowerRows = parseCSV(csvLower);
