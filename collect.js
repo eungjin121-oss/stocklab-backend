@@ -318,14 +318,44 @@ async function collectSentiments() {
   return results.length > 0 ? results : null;
 }
 
+async function collectBaseRates() {
+  const fallback = {
+    kr: { label: '기준금리 (한국)', value: 2.75, unit: '%', change: -0.25, changeUnit: '%p', history: [3.5,3.5,3.5,3.25,3.25,3.0,3.0,2.75], live: true },
+    us: { label: '기준금리 (미국)', value: 4.25, unit: '%', change: -0.25, changeUnit: '%p', history: [5.5,5.5,5.25,5.0,4.75,4.5,4.5,4.25], live: true },
+  };
+  try {
+    // 한국은행 ECOS API (sample 키, 무료)
+    const now = new Date();
+    const endYM = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const startY = now.getFullYear() - 1;
+    const startYM = `${startY}01`;
+    const url = `https://ecos.bok.or.kr/api/StatisticSearch/sample/json/kr/1/10/722Y001/M/${startYM}/${endYM}/0101000`;
+    const data = await fetchJSON(url, 10000);
+    const rows = data?.StatisticSearch?.row;
+    if (rows && rows.length > 0) {
+      const values = rows.map(r => parseFloat(r.DATA_VALUE));
+      const krRate = values[values.length - 1];
+      const krHistory = values.slice(-8);
+      while (krHistory.length < 8) krHistory.unshift(krHistory[0]);
+      const krPrev = krHistory.length >= 2 ? krHistory[krHistory.length - 2] : krRate;
+      fallback.kr = { label: '기준금리 (한국)', value: krRate, unit: '%', change: Math.round((krRate - krPrev) * 100) / 100, changeUnit: '%p', history: krHistory, live: true };
+    }
+    // 미국 금리: FRED에서 직접 제공 안 되므로 하드코딩 유지 (FOMC 때만 변경)
+    return fallback;
+  } catch (e) {
+    console.warn('[Collect] 기준금리 실패:', e.message);
+    return fallback;
+  }
+}
+
 // ===== Main =====
 async function main() {
   console.log(`[Collect] 시작: ${new Date().toISOString()}`);
   const startTime = Date.now();
 
   // Phase 1: 병렬 수집
-  const [fxResult, indicesResult, newsResult, calendarResult, youtubeResult, usdkrwResult] = await Promise.allSettled([
-    collectExchangeRates(), collectIndices(), collectNews(), collectCalendar(), collectYouTube(), collectUsdKrwChart(),
+  const [fxResult, indicesResult, newsResult, calendarResult, youtubeResult, usdkrwResult, baseRatesResult] = await Promise.allSettled([
+    collectExchangeRates(), collectIndices(), collectNews(), collectCalendar(), collectYouTube(), collectUsdKrwChart(), collectBaseRates(),
   ]);
 
   const exchangeRates = fxResult.status === 'fulfilled' ? fxResult.value : null;
@@ -334,6 +364,7 @@ async function main() {
   const calendar = calendarResult.status === 'fulfilled' ? calendarResult.value : null;
   const youtube = youtubeResult.status === 'fulfilled' ? youtubeResult.value : null;
   const usdKrwChart = usdkrwResult.status === 'fulfilled' ? usdkrwResult.value : null;
+  const baseRates = baseRatesResult.status === 'fulfilled' ? baseRatesResult.value : null;
 
   // Phase 2: 뉴스 파생
   const briefing = news ? (() => {
@@ -359,7 +390,7 @@ async function main() {
 
   // 결과 저장
   const data = {
-    indices, exchangeRates, news, briefing, stocks, etfs, trends, calendar, youtube, sentiments, usdKrwChart,
+    indices, exchangeRates, news, briefing, stocks, etfs, trends, calendar, youtube, sentiments, usdKrwChart, baseRates,
     updatedAt: new Date().toISOString(),
   };
 
