@@ -71,7 +71,7 @@ async function analyzeWithFinBert(texts) {
       const res = await fetch('https://router.huggingface.co/hf-inference/models/snunlp/KR-FinBert-SC', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inputs: texts }),
+        body: JSON.stringify({ inputs: texts, parameters: { top_k: null } }),
         signal: ctrl.signal,
       });
       clearTimeout(tid);
