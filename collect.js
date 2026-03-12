@@ -92,7 +92,7 @@ async function collectExchangeRates() {
       { pair: 'CNY/KRW', rate: krw / data.rates.CNY },
     ].map(p => {
       const value = Math.round(p.rate * 100) / 100;
-      return { pair: p.pair, value, change: 0, history: generateNearHistory(value, 8), live: true };
+      return { pair: p.pair, value, change: 0, history: generateNearHistory(value, 8), live: true, demoFields: ['change','history'] };
     });
   } catch (e) { console.warn('[Collect] 환율 실패:', e.message); return null; }
 }
@@ -234,7 +234,7 @@ function extractTrends(news) {
     if (matches) keywords.push({ word, count: matches.length * 50 + Math.floor(Math.random() * 100) });
   });
   keywords.sort((a, b) => b.count - a.count);
-  return keywords.slice(0, 16).map((k, i) => ({ word: k.word, count: k.count, size: i < 2 ? 5 : i < 5 ? 4 : i < 8 ? 3 : i < 12 ? 2 : 1, live: true }));
+  return keywords.slice(0, 16).map((k, i) => ({ word: k.word, count: k.count, size: i < 2 ? 5 : i < 5 ? 4 : i < 8 ? 3 : i < 12 ? 2 : 1, live: true, demoFields: ['count'] }));
 }
 
 const ETF_DEFS = [
@@ -258,7 +258,7 @@ async function collectETFs() {
         const cur = closes[closes.length - 1] || quote.price;
         const m1y = closes.length > 250 ? closes[closes.length - 251] : closes[0];
         const return1y = m1y ? Math.round((cur - m1y) / m1y * 1000) / 10 : 0;
-        results.push({ name: def.name, code: def.code, fee: def.fee, price: quote.price, change: quote.change, changePercent: quote.changePercent, return1y, return3y: Math.round(return1y * 2.5 * 10) / 10, aum: '-', divYield: def.code === '290130' ? 4.2 : def.code === '402460' ? 3.5 : def.code === '069500' ? 1.8 : def.code === '133690' ? 0.5 : 1.2, topHolding: def.topHolding, history: quote.history, fullCloses: quote.fullCloses, timestamps: quote.timestamps, live: true });
+        results.push({ name: def.name, code: def.code, fee: def.fee, price: quote.price, change: quote.change, changePercent: quote.changePercent, return1y, return3y: Math.round(return1y * 2.5 * 10) / 10, aum: '-', divYield: def.code === '290130' ? 4.2 : def.code === '402460' ? 3.5 : def.code === '069500' ? 1.8 : def.code === '133690' ? 0.5 : 1.2, topHolding: def.topHolding, history: quote.history, fullCloses: quote.fullCloses, timestamps: quote.timestamps, live: true, demoFields: ['fee','divYield','topHolding','return3y','aum'] });
       }
     }
     if (i + 3 < ETF_DEFS.length) await sleep(1000);
@@ -320,8 +320,8 @@ async function collectSentiments() {
 
 async function collectBaseRates() {
   const fallback = {
-    kr: { label: '기준금리 (한국)', value: 2.75, unit: '%', change: -0.25, changeUnit: '%p', history: [3.5,3.5,3.5,3.25,3.25,3.0,3.0,2.75], live: true },
-    us: { label: '기준금리 (미국)', value: 4.25, unit: '%', change: -0.25, changeUnit: '%p', history: [5.5,5.5,5.25,5.0,4.75,4.5,4.5,4.25], live: true },
+    kr: { label: '기준금리 (한국)', value: 2.75, unit: '%', change: -0.25, changeUnit: '%p', history: [3.5,3.5,3.5,3.25,3.25,3.0,3.0,2.75], live: false },
+    us: { label: '기준금리 (미국)', value: 3.625, unit: '%', change: 0, changeUnit: '%p', history: [5.5,5.25,5.0,4.75,4.5,4.25,3.625,3.625], live: false },
   };
   try {
     // 한국은행 ECOS API (sample 키, 무료)
@@ -340,7 +340,7 @@ async function collectBaseRates() {
       const krPrev = krHistory.length >= 2 ? krHistory[krHistory.length - 2] : krRate;
       fallback.kr = { label: '기준금리 (한국)', value: krRate, unit: '%', change: Math.round((krRate - krPrev) * 100) / 100, changeUnit: '%p', history: krHistory, live: true };
     }
-    // 미국 금리: FRED에서 직접 제공 안 되므로 하드코딩 유지 (FOMC 때만 변경)
+    // 미국 금리: FRED API는 키 필요하므로 하드코딩 (2026.1 FOMC: 3.50-3.75%, 중간값 3.625%)
     return fallback;
   } catch (e) {
     console.warn('[Collect] 기준금리 실패:', e.message);
