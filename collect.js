@@ -355,6 +355,72 @@ async function collectNaverDiscussion(stockCode) {
   } catch (e) { console.warn(`[Collect] 네이버 토론방 ${stockCode} 실패:`, e.message); return null; }
 }
 
+async function collectDCInsideGallery() {
+  try {
+    const listUrl = 'https://gall.dcinside.com/mgallery/board/lists?id=stockus';
+    const headers = {
+      'User-Agent': BROWSER_UA,
+      'Referer': listUrl,
+      'Accept-Language': 'ko-KR,ko;q=0.9',
+    };
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), 10000);
+    const res = await fetch(listUrl, { signal: ctrl.signal, headers });
+    clearTimeout(tid);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const html = await res.text();
+    const $dc = cheerio.load(html);
+    const posts = [];
+    $dc('tr.ub-content').each((_, row) => {
+      const $row = $dc(row);
+      const num = $row.find('.gall_num').text().trim();
+      if (!num || isNaN(num)) return; // 공지(텍스트)는 제외
+      const titleA = $row.find('.gall_tit a').first();
+      const title = titleA.text().trim();
+      if (!title) return;
+      const postNo = num;
+      const author = $row.find('.gall_writer').attr('data-nick') || $row.find('.gall_writer .nickname').text().trim() || $row.find('.gall_writer').text().trim();
+      const date = $row.find('.gall_date').attr('title') || $row.find('.gall_date').text().trim();
+      const views = parseInt($row.find('.gall_count').text().trim()) || 0;
+      const likes = parseInt($row.find('.gall_recommend').text().trim()) || 0;
+      posts.push({ title, author, date, views, likes, dislikes: 0, source: 'DC미국주식', stock: '미국주식', live: true, postNo: parseInt(postNo) });
+    });
+    // 번호 내림차순 정렬 후 최근 글만 (공지성 오래된 글 제거)
+    posts.sort((a, b) => b.postNo - a.postNo);
+    const recentPosts = posts.filter(p => {
+      const d = new Date(p.date);
+      return !isNaN(d.getTime()) && (Date.now() - d.getTime()) < 3 * 24 * 60 * 60 * 1000;
+    });
+    const targetPosts = recentPosts.length > 0 ? recentPosts : posts.slice(0, 10);
+    // 상위 10개 본문 미리보기
+    for (const p of targetPosts.slice(0, 10)) {
+      try {
+        const detailUrl = `https://gall.dcinside.com/mgallery/board/view?id=stockus&no=${p.postNo}`;
+        const ctrl2 = new AbortController();
+        const tid2 = setTimeout(() => ctrl2.abort(), 8000);
+        const dRes = await fetch(detailUrl, { signal: ctrl2.signal, headers: { ...headers, 'Referer': listUrl } });
+        clearTimeout(tid2);
+        if (dRes.ok) {
+          const dHtml = await dRes.text();
+          const d$ = cheerio.load(dHtml);
+          const body = d$('.write_div').text().trim().replace(/\s+/g, ' ');
+          p.preview = body ? body.substring(0, 150) : null;
+        }
+      } catch { p.preview = null; }
+      delete p.postNo;
+      await sleep(500);
+    }
+    // postNo 정리
+    const finalPosts = targetPosts.slice(0, 10);
+    finalPosts.forEach(p => delete p.postNo);
+    console.log(`[Collect] DC미국주식갤러리: ${finalPosts.length}건 수집`);
+    return finalPosts;
+  } catch (e) {
+    console.warn('[Collect] DC미국주식갤러리 실패:', e.message);
+    return [];
+  }
+}
+
 async function collectSentiments() {
   const targets = [
     { name: '삼성전자', code: '005930' }, { name: 'SK하이닉스', code: '000660' },
@@ -375,6 +441,15 @@ async function collectSentiments() {
       await sleep(500);
     } catch (e) { /* skip */ }
   }
+
+  // 1.5단계: DCInside 미국주식갤러리 수집
+  try {
+    const dcPosts = await collectDCInsideGallery();
+    if (dcPosts.length > 0) {
+      allPosts.push(...dcPosts.slice(0, 10));
+      console.log(`[Collect] DC 게시글 ${dcPosts.length}건 추가`);
+    }
+  } catch (e) { console.warn('[Collect] DC 통합 실패:', e.message); }
 
   // 2단계: FinBert AI 배치 분석 시도
   const allTitles = allPosts.map(p => p.title);
