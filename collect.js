@@ -340,7 +340,34 @@ async function collectBaseRates() {
       const krPrev = krHistory.length >= 2 ? krHistory[krHistory.length - 2] : krRate;
       fallback.kr = { label: '기준금리 (한국)', value: krRate, unit: '%', change: Math.round((krRate - krPrev) * 100) / 100, changeUnit: '%p', history: krHistory, live: true };
     }
-    // 미국 금리: FRED API는 키 필요하므로 하드코딩 (2026.1 FOMC: 3.50-3.75%, 중간값 3.625%)
+    // 미국 금리: FRED CSV (API 키 불필요)
+    try {
+      const startDate = `${now.getFullYear() - 2}-01-01`;
+      const csvUpper = await fetchText(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFEDTARU&cosd=${startDate}`, 30000);
+      const csvLower = await fetchText(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFEDTARL&cosd=${startDate}`, 30000);
+      const parseCSV = (csv) => csv.trim().split('\n').slice(1).map(line => { const [date, val] = line.split(','); return { date, value: parseFloat(val) }; }).filter(r => !isNaN(r.value));
+      const upperRows = parseCSV(csvUpper);
+      const lowerRows = parseCSV(csvLower);
+      if (upperRows.length > 0 && lowerRows.length > 0) {
+        const upper = upperRows[upperRows.length - 1].value;
+        const lower = lowerRows[lowerRows.length - 1].value;
+        const usRate = Math.round((upper + lower) / 2 * 1000) / 1000;
+        // 월별 변동 히스토리 추출 (각 월 마지막 값)
+        const monthlyMap = new Map();
+        upperRows.forEach((r, i) => {
+          const ym = r.date.substring(0, 7);
+          const lo = lowerRows[i] ? lowerRows[i].value : lower;
+          monthlyMap.set(ym, Math.round((r.value + lo) / 2 * 1000) / 1000);
+        });
+        const monthlyValues = [...monthlyMap.values()];
+        const usHistory = monthlyValues.slice(-8);
+        while (usHistory.length < 8) usHistory.unshift(usHistory[0]);
+        const usPrev = usHistory.length >= 2 ? usHistory[usHistory.length - 2] : usRate;
+        fallback.us = { label: '기준금리 (미국)', value: usRate, unit: '%', change: Math.round((usRate - usPrev) * 100) / 100, changeUnit: '%p', history: usHistory, live: true };
+      }
+    } catch (e2) {
+      console.warn('[Collect] 미국 기준금리 FRED 실패:', e2.message);
+    }
     return fallback;
   } catch (e) {
     console.warn('[Collect] 기준금리 실패:', e.message);
