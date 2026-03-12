@@ -57,7 +57,59 @@ function generateNearHistory(current, count) {
   return arr;
 }
 
-// ===== 감성 분석 =====
+// ===== FinBert AI 감성분석 =====
+async function analyzeWithFinBert(texts) {
+  const token = process.env.HF_TOKEN;
+  if (!token) { console.log('[FinBert] HF_TOKEN 없음 → 키워드 분석 fallback'); return null; }
+  if (!texts || texts.length === 0) return null;
+
+  const maxRetries = 2;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), 30000);
+      const res = await fetch('https://api-inference.huggingface.co/models/snunlp/KR-FinBert-SC', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inputs: texts }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(tid);
+
+      if (res.status === 503) {
+        // 모델 로딩 중 — 대기 후 재시도
+        console.log(`[FinBert] 모델 로딩 중 (503), ${20}초 대기... (시도 ${attempt + 1}/${maxRetries + 1})`);
+        await sleep(20000);
+        continue;
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+
+      const data = await res.json();
+      // 응답 형식: [[{label,score},{label,score},{label,score}], ...] (텍스트별 3개 라벨)
+      return data.map((item, i) => {
+        // item이 배열이면 분류 결과, 아니면 에러
+        if (!Array.isArray(item)) return { label: '중립', score: 0, model: 'keyword' };
+        const scores = {};
+        item.forEach(r => { scores[r.label] = r.score; });
+        // 가장 높은 점수의 라벨 선택
+        const best = item.reduce((a, b) => a.score > b.score ? a : b);
+        // 라벨 정규화: 긍정/부정/중립
+        let label = best.label;
+        if (label === 'positive') label = '긍정';
+        else if (label === 'negative') label = '부정';
+        else if (label === 'neutral') label = '중립';
+        return { label, score: Math.round(best.score * 1000) / 10, scores, model: 'finbert' };
+      });
+    } catch (e) {
+      console.warn(`[FinBert] API 실패 (시도 ${attempt + 1}):`, e.message);
+      if (attempt < maxRetries) { await sleep(5000); continue; }
+      return null;
+    }
+  }
+  return null;
+}
+
+// ===== 키워드 기반 감성 분석 (fallback) =====
 const KoreanSentiment = {
   strongPositive: ['급등','폭등','대박','상한가','역대최고','신고가','대호재','초강세','텐배거','완전체'],
   positive: ['상승','매수','호재','돌파','반등','강세','기대','수익','실적개선','추천','좋은','긍정','성장','흑자','호실적','저평가','목표가','상향','모아가자','존버','매력적','오르','올라','갈거','간다','개꿀','굿','좋다','기회','바닥'],
@@ -310,23 +362,72 @@ async function collectSentiments() {
   ];
   const results = [];
   const allPosts = []; // 커뮤니티 글 목록 (콘텐츠 허브용)
+  const stockPostMap = {}; // stock별 posts 매핑
+
+  // 1단계: 모든 종목의 게시글 수집
   for (const t of targets) {
     try {
       const posts = await collectNaverDiscussion(t.code);
       if (posts && posts.length > 0) {
-        let pos = 0, neg = 0, neu = 0;
-        posts.forEach(p => {
-          const r = KoreanSentiment.analyze(p.title);
-          if (r.score > 0) pos++; else if (r.score < 0) neg++; else neu++;
-        });
-        const total = posts.length || 1;
-        results.push({ stock: t.name, positive: Math.round(pos / total * 100), neutral: Math.round(neu / total * 100), negative: Math.round(neg / total * 100), mentions: posts.length, live: true });
-        // 상위 글 저장
+        stockPostMap[t.name] = posts;
         allPosts.push(...posts.slice(0, 5).map(p => ({ ...p, stock: t.name })));
       }
       await sleep(500);
     } catch (e) { /* skip */ }
   }
+
+  // 2단계: FinBert AI 배치 분석 시도
+  const allTitles = allPosts.map(p => p.title);
+  const finbertResults = await analyzeWithFinBert(allTitles);
+  const useFinBert = finbertResults && finbertResults.length === allTitles.length;
+  const sentimentModel = useFinBert ? 'finbert' : 'keyword';
+  console.log(`[Collect] 감성분석 모델: ${sentimentModel} (게시글 ${allTitles.length}건)`);
+
+  // 3단계: 게시글에 감성 결과 부착
+  if (useFinBert) {
+    allPosts.forEach((p, i) => { p.sentiment = finbertResults[i]; });
+  } else {
+    allPosts.forEach(p => {
+      const r = KoreanSentiment.analyze(p.title);
+      let label = r.label;
+      if (label === '매우 긍정') label = '긍정';
+      if (label === '매우 부정') label = '부정';
+      p.sentiment = { label, score: Math.abs(r.score) * 10, model: 'keyword' };
+    });
+  }
+
+  // 4단계: 종목별 감성 집계 (전체 게시글 기준)
+  for (const t of targets) {
+    const posts = stockPostMap[t.name];
+    if (!posts || posts.length === 0) continue;
+
+    // 전체 posts에 대해 FinBert 분석 (배치에는 상위 5개만 있으므로 나머지는 키워드 분석)
+    let pos = 0, neg = 0, neu = 0;
+    if (useFinBert) {
+      // 상위 5개는 FinBert 결과 사용, 나머지는 키워드 fallback
+      const topPosts = allPosts.filter(p => p.stock === t.name);
+      const topTitles = new Set(topPosts.map(p => p.title));
+      posts.forEach(p => {
+        const top = topPosts.find(tp => tp.title === p.title);
+        if (top && top.sentiment) {
+          if (top.sentiment.label === '긍정') pos++;
+          else if (top.sentiment.label === '부정') neg++;
+          else neu++;
+        } else {
+          const r = KoreanSentiment.analyze(p.title);
+          if (r.score > 0) pos++; else if (r.score < 0) neg++; else neu++;
+        }
+      });
+    } else {
+      posts.forEach(p => {
+        const r = KoreanSentiment.analyze(p.title);
+        if (r.score > 0) pos++; else if (r.score < 0) neg++; else neu++;
+      });
+    }
+    const total = posts.length || 1;
+    results.push({ stock: t.name, positive: Math.round(pos / total * 100), neutral: Math.round(neu / total * 100), negative: Math.round(neg / total * 100), mentions: posts.length, live: true, sentimentModel });
+  }
+
   return {
     sentiments: results.length > 0 ? results : null,
     communityPosts: allPosts.length > 0 ? allPosts : null,
@@ -395,7 +496,39 @@ async function main() {
   const usdKrwChart = usdkrwResult.status === 'fulfilled' ? usdkrwResult.value : null;
   const baseRates = baseRatesResult.status === 'fulfilled' ? baseRatesResult.value : null;
 
-  // Phase 2: 뉴스 파생
+  // Phase 2: 뉴스 감성분석 (FinBert AI)
+  let newsSentiment = null;
+  if (news && news.length > 0) {
+    const newsTitles = news.map(n => n.title);
+    const newsFinbert = await analyzeWithFinBert(newsTitles);
+    if (newsFinbert && newsFinbert.length === newsTitles.length) {
+      let pos = 0, neg = 0, neu = 0;
+      news.forEach((n, i) => {
+        n.sentiment = newsFinbert[i];
+        if (newsFinbert[i].label === '긍정') pos++;
+        else if (newsFinbert[i].label === '부정') neg++;
+        else neu++;
+      });
+      const total = news.length || 1;
+      newsSentiment = { positive: Math.round(pos / total * 100), neutral: Math.round(neu / total * 100), negative: Math.round(neg / total * 100), model: 'finbert' };
+      console.log(`[Collect] 뉴스 감성분석 (FinBert): 긍정${newsSentiment.positive}% 중립${newsSentiment.neutral}% 부정${newsSentiment.negative}%`);
+    } else {
+      // 키워드 fallback
+      let pos = 0, neg = 0, neu = 0;
+      news.forEach(n => {
+        const r = KoreanSentiment.analyze(n.title);
+        let label = r.label;
+        if (label === '매우 긍정') label = '긍정';
+        if (label === '매우 부정') label = '부정';
+        n.sentiment = { label, score: Math.abs(r.score) * 10, model: 'keyword' };
+        if (r.score > 0) pos++; else if (r.score < 0) neg++; else neu++;
+      });
+      const total = news.length || 1;
+      newsSentiment = { positive: Math.round(pos / total * 100), neutral: Math.round(neu / total * 100), negative: Math.round(neg / total * 100), model: 'keyword' };
+    }
+  }
+
+  // Phase 2b: 뉴스 파생
   const briefing = news ? (() => {
     const today = new Date();
     const dateStr = `${today.getFullYear()}년 ${today.getMonth() + 1}월 ${today.getDate()}일`;
@@ -421,7 +554,7 @@ async function main() {
 
   // 결과 저장
   const data = {
-    indices, exchangeRates, news, briefing, stocks, etfs, trends, calendar, youtube, sentiments, communityPosts, usdKrwChart, baseRates,
+    indices, exchangeRates, news, briefing, stocks, etfs, trends, calendar, youtube, sentiments, communityPosts, newsSentiment, usdKrwChart, baseRates,
     updatedAt: new Date().toISOString(),
   };
 
