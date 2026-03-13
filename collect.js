@@ -566,7 +566,7 @@ async function collectStocks() {
 async function collectNews(query) {
   query = query || '한국 증시 주식 경제';
   try {
-    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=ko&gl=KR&ceid=KR:ko`;
+    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}+when:3d&hl=ko&gl=KR&ceid=KR:ko`;
     const xml = await fetchText(rssUrl, 10000);
     const $ = cheerio.load(xml, { xmlMode: true });
     const articles = [];
@@ -575,7 +575,8 @@ async function collectNews(query) {
       const source = $(item).find('source').text();
       const pubDate = $(item).find('pubDate').text();
       const title = rawTitle.replace(/\s*-\s*[^-]+$/, '').trim() || rawTitle;
-      articles.push({ title, source: source || '뉴스', time: timeAgo(new Date(pubDate)), live: true });
+      const pd = new Date(pubDate);
+      articles.push({ title, source: source || '뉴스', time: timeAgo(pd), pubDate: isNaN(pd.getTime()) ? '' : pd.toISOString(), live: true });
     });
     return articles.length > 0 ? articles : null;
   } catch (e) { console.warn('[Collect] 뉴스 실패:', e.message); return null; }
@@ -609,18 +610,21 @@ async function collectCalendar() {
 }
 
 async function collectYouTube() {
-  const queries = ['한국 주식 투자 유튜브', '주식 분석 전망 2026'];
+  // 투자 관련 최신 기사를 유튜브 콘텐츠 섹션에 표시
+  // Google News RSS when:7d로 최근 7일 내 기사만 수집
+  const queries = ['주식 투자 전망', '증시 분석 전문가'];
   const allItems = [];
   for (const query of queries) {
     try {
-      const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=ko&gl=KR&ceid=KR:ko`;
+      const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}+when:7d&hl=ko&gl=KR&ceid=KR:ko`;
       const xml = await fetchText(rssUrl, 10000);
       const $ = cheerio.load(xml, { xmlMode: true });
       $('item').slice(0, 5).each((_, item) => {
         const rawTitle = $(item).find('title').text();
         const source = $(item).find('source').text();
         const pubDate = $(item).find('pubDate').text();
-        allItems.push({ title: rawTitle.replace(/\s*-\s*[^-]+$/, '').trim() || rawTitle, channel: source || '투자 채널', time: timeAgo(new Date(pubDate)), live: true });
+        const pd = new Date(pubDate);
+        allItems.push({ title: rawTitle.replace(/\s*-\s*[^-]+$/, '').trim() || rawTitle, channel: source || '투자 채널', time: timeAgo(pd), pubDate: isNaN(pd.getTime()) ? '' : pd.toISOString(), live: true });
       });
     } catch (e) { /* skip */ }
   }

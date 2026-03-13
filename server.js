@@ -247,7 +247,7 @@ async function collectStocks() {
 async function collectNews(query) {
   query = query || '한국 증시 주식 경제';
   try {
-    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=ko&gl=KR&ceid=KR:ko`;
+    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}+when:3d&hl=ko&gl=KR&ceid=KR:ko`;
     const xml = await fetchText(rssUrl, 10000);
     const $ = cheerio.load(xml, { xmlMode: true });
     const items = $('item');
@@ -258,7 +258,8 @@ async function collectNews(query) {
       const source = $(item).find('source').text();
       const pubDate = $(item).find('pubDate').text();
       const title = rawTitle.replace(/\s*-\s*[^-]+$/, '').trim() || rawTitle;
-      articles.push({ title, source: source || '뉴스', time: timeAgo(new Date(pubDate)), live: true });
+      const pd = new Date(pubDate);
+      articles.push({ title, source: source || '뉴스', time: timeAgo(pd), pubDate: isNaN(pd.getTime()) ? '' : pd.toISOString(), live: true });
     });
     return articles.length > 0 ? articles : null;
   } catch (e) { console.warn('[Collect] 뉴스 실패:', e.message); return null; }
@@ -324,11 +325,11 @@ async function collectCalendar() {
 // 8. 유튜브 콘텐츠
 async function collectYouTube() {
   try {
-    const queries = ['한국 주식 투자 유튜브', '주식 분석 전망 2026'];
+    const queries = ['주식 투자 전망', '증시 분석 전문가'];
     const allItems = [];
     for (const query of queries) {
       try {
-        const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=ko&gl=KR&ceid=KR:ko`;
+        const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}+when:7d&hl=ko&gl=KR&ceid=KR:ko`;
         const xml = await fetchText(rssUrl, 10000);
         const $ = cheerio.load(xml, { xmlMode: true });
         $('item').slice(0, 5).each((_, item) => {
@@ -336,7 +337,8 @@ async function collectYouTube() {
           const source = $(item).find('source').text();
           const pubDate = $(item).find('pubDate').text();
           const title = rawTitle.replace(/\s*-\s*[^-]+$/, '').trim() || rawTitle;
-          allItems.push({ title, channel: source || '투자 채널', time: timeAgo(new Date(pubDate)), live: true });
+          const pd = new Date(pubDate);
+          allItems.push({ title, channel: source || '투자 채널', time: timeAgo(pd), pubDate: isNaN(pd.getTime()) ? '' : pd.toISOString(), live: true });
         });
       } catch (e) { /* skip */ }
     }
