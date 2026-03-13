@@ -2,7 +2,7 @@
  * StockLab Data Collector
  * GitHub Actions에서 10분마다 실행되어 데이터를 수집하고 JSON으로 저장
  */
-const fetch = require('node-fetch');
+// Node.js 18+ 네이티브 fetch 사용 (node-fetch 불필요)
 const cheerio = require('cheerio');
 const fs = require('fs');
 const path = require('path');

@@ -2,7 +2,14 @@ name: Collect Stock Data
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    # 한국 장시간 (UTC 00:00~06:30) 10분 간격
+    - cron: '*/10 0-6 * * 1-5'
+    # 미국 장시간 (UTC 14:30~21:00) 10분 간격
+    - cron: '*/10 14-20 * * 1-5'
+    # 비장시간 30분 간격
+    - cron: '0,30 7-13,21-23 * * 1-5'
+    # 주말 1시간 간격
+    - cron: '0 */2 * * 0,6'
   workflow_dispatch:
 
 permissions:
@@ -17,6 +24,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
 
       - name: Install dependencies
         run: npm install
