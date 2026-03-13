@@ -732,29 +732,42 @@ async function main() {
   const sentiments = sentimentResult.sentiments;
   const newPosts = sentimentResult.communityPosts || [];
 
-  // 커뮤니티 게시글 누적 (기존 데이터 + 신규 병합, 중복 제거, 최대 200개)
+  // 커뮤니티 게시글 누적 (Firestore DB에서 기존 데이터 읽기 → 신규 병합 → 중복 제거 → 최대 500개)
   let communityPosts = newPosts;
   try {
-    const latestPath = path.join(__dirname, 'data', 'latest.json');
-    if (fs.existsSync(latestPath)) {
-      const prev = JSON.parse(fs.readFileSync(latestPath, 'utf-8'));
-      const prevPosts = prev.communityPosts || [];
-      if (prevPosts.length > 0 && newPosts.length > 0) {
-        const seen = new Set();
-        const merged = [];
-        // 새 글 우선 추가
-        for (const p of newPosts) {
-          const key = `${p.title}||${p.source}`;
-          if (!seen.has(key)) { seen.add(key); merged.push(p); }
-        }
-        // 기존 글 중 중복 아닌 것 추가
-        for (const p of prevPosts) {
-          const key = `${p.title}||${p.source}`;
-          if (!seen.has(key)) { seen.add(key); merged.push(p); }
-        }
-        communityPosts = merged.slice(0, 500);
-        console.log(`[Collect] 커뮤니티 누적: 신규 ${newPosts.length} + 기존 ${prevPosts.length} → 병합 ${merged.length} → 저장 ${communityPosts.length}건`);
+    let prevPosts = [];
+    // 1순위: Firestore DB에서 기존 게시글 읽기
+    if (db) {
+      const doc = await db.doc('current/latest').get();
+      if (doc.exists && doc.data().communityPosts) {
+        prevPosts = doc.data().communityPosts;
+        console.log(`[Collect] Firestore에서 기존 커뮤니티 ${prevPosts.length}건 로드`);
       }
+    }
+    // 2순위 fallback: 로컬 파일
+    if (prevPosts.length === 0) {
+      const latestPath = path.join(__dirname, 'data', 'latest.json');
+      if (fs.existsSync(latestPath)) {
+        const prev = JSON.parse(fs.readFileSync(latestPath, 'utf-8'));
+        prevPosts = prev.communityPosts || [];
+        if (prevPosts.length > 0) console.log(`[Collect] 로컬 파일에서 기존 커뮤니티 ${prevPosts.length}건 로드`);
+      }
+    }
+    if (prevPosts.length > 0 && newPosts.length > 0) {
+      const seen = new Set();
+      const merged = [];
+      // 새 글 우선 추가
+      for (const p of newPosts) {
+        const key = `${p.title}||${p.source}`;
+        if (!seen.has(key)) { seen.add(key); merged.push(p); }
+      }
+      // 기존 글 중 중복 아닌 것 추가
+      for (const p of prevPosts) {
+        const key = `${p.title}||${p.source}`;
+        if (!seen.has(key)) { seen.add(key); merged.push(p); }
+      }
+      communityPosts = merged.slice(0, 500);
+      console.log(`[Collect] 커뮤니티 누적: 신규 ${newPosts.length} + 기존 ${prevPosts.length} → 병합 ${merged.length} → 저장 ${communityPosts.length}건`);
     }
   } catch (e) { console.warn('[Collect] 커뮤니티 누적 병합 실패:', e.message); }
 
