@@ -736,7 +736,10 @@ async function collectDCInsideGallery() {
       const titleA = $row.find('.gall_tit a').first();
       const title = titleA.text().trim();
       if (!title) return;
-      const postNo = num;
+      // href에서 게시글 번호 추출 (더 안정적)
+      const href = titleA.attr('href') || '';
+      const hrefNoMatch = href.match(/no=(\d+)/);
+      const postNo = hrefNoMatch ? hrefNoMatch[1] : num;
       const author = $row.find('.gall_writer').attr('data-nick') || $row.find('.gall_writer .nickname').text().trim() || $row.find('.gall_writer').text().trim();
       const date = $row.find('.gall_date').attr('title') || $row.find('.gall_date').text().trim();
       const views = parseInt($row.find('.gall_count').text().trim()) || 0;
