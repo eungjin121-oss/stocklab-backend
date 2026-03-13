@@ -344,6 +344,18 @@ async function collectExchangeRates() {
     const data = await fetchJSON('https://open.er-api.com/v6/latest/USD');
     if (data.result !== 'success') throw new Error('API error');
     const krw = data.rates.KRW;
+
+    // 이전 수집 데이터에서 환율 히스토리 로드
+    let prevRates = {};
+    try {
+      const prevData = JSON.parse(fs.readFileSync(path.join(__dirname, 'data/latest.json'), 'utf-8'));
+      if (prevData.exchangeRates) {
+        for (const r of prevData.exchangeRates) {
+          prevRates[r.pair] = { value: r.value, history: r.history || [] };
+        }
+      }
+    } catch (_) {}
+
     return [
       { pair: 'USD/KRW', rate: krw, group: '주요' },
       { pair: 'EUR/KRW', rate: krw / data.rates.EUR, group: '주요' },
@@ -355,7 +367,16 @@ async function collectExchangeRates() {
       { pair: 'THB/KRW', rate: krw / data.rates.THB, group: '아시아' },
     ].map(p => {
       const value = Math.round(p.rate * 100) / 100;
-      return { pair: p.pair, value, change: 0, history: [], live: true, group: p.group };
+      const prev = prevRates[p.pair];
+      const prevValue = prev?.value || value;
+      const change = Math.round((value - prevValue) * 100) / 100;
+      // 히스토리: 이전 히스토리에 현재값 추가 (최대 8개)
+      let history = prev?.history ? [...prev.history] : [];
+      if (history.length === 0 || history[history.length - 1] !== value) {
+        history.push(value);
+      }
+      if (history.length > 8) history = history.slice(-8);
+      return { pair: p.pair, value, change, history, live: true, group: p.group };
     });
   } catch (e) { console.warn('[Collect] 환율 실패:', e.message); return null; }
 }
