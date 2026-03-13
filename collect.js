@@ -12,7 +12,8 @@ const CONFIG = {
   NAVER_POSTS_PER_STOCK: 10,
   DC_POSTS_LIMIT: 20,
   DC_BATCH_SIZE: 5,        // 병렬 크롤링 배치 크기
-  COMMUNITY_MAX_POSTS: 500, // 누적 최대
+  COMMUNITY_CDN_POSTS: 30,  // CDN fallback(latest.json)에 포함할 최근 게시글 수
+  COMMUNITY_HOME_POSTS: 10, // current/latest 문서에 포함할 홈 미리보기 게시글 수
   SLEEP_MS: 500,
   FETCH_TIMEOUT: 12000,
   DC_FETCH_TIMEOUT: 8000,
@@ -40,16 +41,80 @@ async function writeToFirestore(data) {
     const dateKey = now.toISOString().slice(0, 10); // "2026-03-13"
     const timeKey = String(now.getHours()).padStart(2, '0') + String(now.getMinutes()).padStart(2, '0');
 
+    // communityPosts는 최근 10개만 current/latest에 저장 (홈 탭 미리보기용)
+    // 전체 게시글은 community_posts 컬렉션에 별도 저장
+    const dataForDoc = { ...data };
+    if (dataForDoc.communityPosts && dataForDoc.communityPosts.length > CONFIG.COMMUNITY_HOME_POSTS) {
+      dataForDoc.communityPosts = dataForDoc.communityPosts.slice(0, CONFIG.COMMUNITY_HOME_POSTS);
+    }
+
     // 1. current/latest 덮어쓰기 (프론트엔드 최신 데이터용)
-    await db.doc('current/latest').set(data);
+    await db.doc('current/latest').set(dataForDoc);
 
     // 2. snapshots/{date}/times/{HHmm} 히스토리 저장
-    await db.collection('snapshots').doc(dateKey).collection('times').doc(timeKey).set(data);
+    await db.collection('snapshots').doc(dateKey).collection('times').doc(timeKey).set(dataForDoc);
 
     console.log(`[Firestore] 저장 완료: current/latest + snapshots/${dateKey}/times/${timeKey}`);
   } catch (e) {
     console.error('[Firestore] 저장 실패:', e.message);
     // Non-fatal: CDN fallback 유지
+  }
+}
+
+// ===== community_posts 컬렉션에 개별 문서로 저장 =====
+async function saveCommunityPosts(posts) {
+  if (!db || !posts || posts.length === 0) return;
+  try {
+    // Firestore batch write는 최대 500건이므로 나눠서 처리
+    const BATCH_LIMIT = 500;
+    let totalSaved = 0;
+
+    for (let i = 0; i < posts.length; i += BATCH_LIMIT) {
+      const chunk = posts.slice(i, i + BATCH_LIMIT);
+      const batch = db.batch();
+
+      for (const p of chunk) {
+        // 중복 방지용 고유 ID 생성 (title + source 해시)
+        const docId = Buffer.from(`${p.title}||${p.source}`).toString('base64url').slice(0, 40);
+        const docRef = db.collection('community_posts').doc(docId);
+
+        // set with merge: 이미 존재하면 업데이트, 없으면 생성
+        batch.set(docRef, {
+          ...p,
+          createdAt: p.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+      }
+
+      await batch.commit();
+      totalSaved += chunk.length;
+    }
+
+    console.log(`[Firestore] community_posts: ${totalSaved}건 저장 (${Math.ceil(posts.length / BATCH_LIMIT)}개 batch)`);
+  } catch (e) {
+    console.error('[Firestore] community_posts 저장 실패:', e.message);
+  }
+}
+
+// ===== sentiment_history 컬렉션에 시계열 스냅샷 저장 =====
+async function saveSentimentSnapshot(sentiments) {
+  if (!db || !sentiments || sentiments.length === 0) return;
+  try {
+    const now = new Date().toISOString();
+    const batch = db.batch();
+
+    for (const s of sentiments) {
+      const docId = `${s.stock}_${now.slice(0, 16).replace(/[:.]/g, '')}`;
+      batch.set(db.collection('sentiment_history').doc(docId), {
+        ...s,
+        timestamp: now,
+      });
+    }
+
+    await batch.commit();
+    console.log(`[Firestore] sentiment_history: ${sentiments.length}건 저장`);
+  } catch (e) {
+    console.error('[Firestore] sentiment_history 저장 실패:', e.message);
   }
 }
 
@@ -789,48 +854,17 @@ async function main() {
     }
   }
 
-  // 커뮤니티 게시글 누적 (Firestore DB에서 기존 데이터 읽기 → 신규 병합 → 중복 제거 → 최대 500개)
-  let communityPosts = newPosts;
-  try {
-    let prevPosts = [];
-    // 1순위: Firestore DB에서 기존 게시글 읽기
-    if (db) {
-      const doc = await db.doc('current/latest').get();
-      if (doc.exists && doc.data().communityPosts) {
-        prevPosts = doc.data().communityPosts;
-        console.log(`[Collect] Firestore에서 기존 커뮤니티 ${prevPosts.length}건 로드`);
-      }
-    }
-    // 2순위 fallback: 로컬 파일
-    if (prevPosts.length === 0) {
-      const latestPath = path.join(__dirname, 'data', 'latest.json');
-      if (fs.existsSync(latestPath)) {
-        const prev = JSON.parse(fs.readFileSync(latestPath, 'utf-8'));
-        prevPosts = prev.communityPosts || [];
-        if (prevPosts.length > 0) console.log(`[Collect] 로컬 파일에서 기존 커뮤니티 ${prevPosts.length}건 로드`);
-      }
-    }
-    if (prevPosts.length > 0 && newPosts.length > 0) {
-      const seen = new Set();
-      const merged = [];
-      // 새 글 우선 추가
-      for (const p of newPosts) {
-        const key = `${p.title}||${p.source}`;
-        if (!seen.has(key)) { seen.add(key); merged.push(p); }
-      }
-      // 기존 글 중 중복 아닌 것 추가
-      for (const p of prevPosts) {
-        const key = `${p.title}||${p.source}`;
-        if (!seen.has(key)) { seen.add(key); merged.push(p); }
-      }
-      communityPosts = merged.slice(0, CONFIG.COMMUNITY_MAX_POSTS);
-      console.log(`[Collect] 커뮤니티 누적: 신규 ${newPosts.length} + 기존 ${prevPosts.length} → 병합 ${merged.length} → 저장 ${communityPosts.length}건`);
-    }
-  } catch (e) { console.warn('[Collect] 커뮤니티 누적 병합 실패:', e.message); }
+  // 커뮤니티 게시글: community_posts 컬렉션에 개별 문서로 저장 (무제한 누적)
+  // current/latest 문서에는 최근 10개만 (writeToFirestore에서 처리)
+  // latest.json CDN fallback에는 최근 30개만
+  const communityPosts = newPosts;
+  console.log(`[Collect] 커뮤니티 게시글: ${communityPosts.length}건 수집 → community_posts 컬렉션에 개별 저장`);
 
-  // 결과 저장
+  // 결과 저장 (latest.json CDN fallback: communityPosts 최근 30개만)
   const data = {
-    indices, exchangeRates, news, briefing, stocks, etfs, trends, calendar, youtube, sentiments, communityPosts, newsSentiment, usdKrwChart, baseRates, dxy,
+    indices, exchangeRates, news, briefing, stocks, etfs, trends, calendar, youtube, sentiments,
+    communityPosts: communityPosts.slice(0, CONFIG.COMMUNITY_CDN_POSTS), // CDN fallback용 최근 게시글
+    newsSentiment, usdKrwChart, baseRates, dxy,
     updatedAt: new Date().toISOString(),
   };
 
@@ -838,8 +872,15 @@ async function main() {
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
   fs.writeFileSync(path.join(dataDir, 'latest.json'), JSON.stringify(data));
 
-  // Firestore에 저장 (CDN과 병행)
+  // Firestore에 저장 (current/latest + snapshots)
+  // writeToFirestore 내부에서 communityPosts를 최근 10개로 잘라서 저장
   await writeToFirestore(data);
+
+  // community_posts 컬렉션에 전체 게시글 개별 문서로 저장 (무제한 누적, 중복 방지)
+  await saveCommunityPosts(communityPosts);
+
+  // sentiment_history 컬렉션에 감성분석 시계열 스냅샷 저장
+  await saveSentimentSnapshot(sentiments);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`[Collect] 완료 (${elapsed}s) - 환율:${!!exchangeRates} 지수:${!!indices} 뉴스:${news?.length || 0} 주식:${stocks?.length || 0} ETF:${etfs?.length || 0} 감성:${sentiments?.length || 0}`);
