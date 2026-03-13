@@ -7,6 +7,40 @@ const cheerio = require('cheerio');
 const fs = require('fs');
 const path = require('path');
 
+// ===== Firebase Firestore =====
+let db = null;
+if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+  try {
+    const admin = require('firebase-admin');
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    db = admin.firestore();
+    console.log('[Firestore] 초기화 성공');
+  } catch (e) {
+    console.warn('[Firestore] 초기화 실패:', e.message);
+  }
+}
+
+async function writeToFirestore(data) {
+  if (!db) { console.log('[Firestore] DB 없음, 건너뜀'); return; }
+  try {
+    const now = new Date();
+    const dateKey = now.toISOString().slice(0, 10); // "2026-03-13"
+    const timeKey = String(now.getHours()).padStart(2, '0') + String(now.getMinutes()).padStart(2, '0');
+
+    // 1. current/latest 덮어쓰기 (프론트엔드 최신 데이터용)
+    await db.doc('current/latest').set(data);
+
+    // 2. snapshots/{date}/times/{HHmm} 히스토리 저장
+    await db.collection('snapshots').doc(dateKey).collection('times').doc(timeKey).set(data);
+
+    console.log(`[Firestore] 저장 완료: current/latest + snapshots/${dateKey}/times/${timeKey}`);
+  } catch (e) {
+    console.error('[Firestore] 저장 실패:', e.message);
+    // Non-fatal: CDN fallback 유지
+  }
+}
+
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 // ===== Fetch Helpers =====
@@ -636,6 +670,9 @@ async function main() {
   const dataDir = path.join(__dirname, 'data');
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
   fs.writeFileSync(path.join(dataDir, 'latest.json'), JSON.stringify(data));
+
+  // Firestore에 저장 (CDN과 병행)
+  await writeToFirestore(data);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`[Collect] 완료 (${elapsed}s) - 환율:${!!exchangeRates} 지수:${!!indices} 뉴스:${news?.length || 0} 주식:${stocks?.length || 0} ETF:${etfs?.length || 0} 감성:${sentiments?.length || 0}`);

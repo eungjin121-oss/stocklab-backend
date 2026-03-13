@@ -26,6 +26,7 @@ jobs:
         timeout-minutes: 5
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
       - name: Commit and push
         run: |
