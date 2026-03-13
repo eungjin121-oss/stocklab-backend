@@ -730,7 +730,33 @@ async function main() {
   await sleep(2000);
   const sentimentResult = await collectSentiments();
   const sentiments = sentimentResult.sentiments;
-  const communityPosts = sentimentResult.communityPosts;
+  const newPosts = sentimentResult.communityPosts || [];
+
+  // 커뮤니티 게시글 누적 (기존 데이터 + 신규 병합, 중복 제거, 최대 200개)
+  let communityPosts = newPosts;
+  try {
+    const latestPath = path.join(__dirname, 'data', 'latest.json');
+    if (fs.existsSync(latestPath)) {
+      const prev = JSON.parse(fs.readFileSync(latestPath, 'utf-8'));
+      const prevPosts = prev.communityPosts || [];
+      if (prevPosts.length > 0 && newPosts.length > 0) {
+        const seen = new Set();
+        const merged = [];
+        // 새 글 우선 추가
+        for (const p of newPosts) {
+          const key = `${p.title}||${p.source}`;
+          if (!seen.has(key)) { seen.add(key); merged.push(p); }
+        }
+        // 기존 글 중 중복 아닌 것 추가
+        for (const p of prevPosts) {
+          const key = `${p.title}||${p.source}`;
+          if (!seen.has(key)) { seen.add(key); merged.push(p); }
+        }
+        communityPosts = merged.slice(0, 200);
+        console.log(`[Collect] 커뮤니티 누적: 신규 ${newPosts.length} + 기존 ${prevPosts.length} → 병합 ${merged.length} → 저장 ${communityPosts.length}건`);
+      }
+    }
+  } catch (e) { console.warn('[Collect] 커뮤니티 누적 병합 실패:', e.message); }
 
   // 결과 저장
   const data = {
