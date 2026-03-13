@@ -143,27 +143,73 @@ async function analyzeWithFinBert(texts) {
   return null;
 }
 
-// ===== 키워드 기반 감성 분석 (fallback) =====
+// ===== 키워드 기반 감성 분석 (fallback + 하이브리드 보정용) =====
 const KoreanSentiment = {
-  strongPositive: ['급등','폭등','대박','상한가','역대최고','신고가','대호재','초강세','텐배거','완전체'],
-  positive: ['상승','매수','호재','돌파','반등','강세','기대','수익','실적개선','추천','좋은','긍정','성장','흑자','호실적','저평가','목표가','상향','모아가자','존버','매력적','오르','올라','갈거','간다','개꿀','굿','좋다','기회','바닥'],
-  strongNegative: ['급락','폭락','하한가','깡통','반토막','대폭락','대참사','물린','쪽박','망'],
-  negative: ['하락','매도','악재','손절','약세','우려','손실','실적악화','위험','나쁜','부정','적자','고평가','하향','빠진','떨어','떨어진','물려','빠질','내려','걱정','불안','위기','폭망','팔자','개미털기','못하','안좋','삼성망','ㅠ'],
+  // 커뮤니티 비속어/은어까지 포함한 확장 사전
+  strongPositive: ['급등','폭등','대박','상한가','역대최고','신고가','대호재','초강세','텐배거','완전체','개이득','떡상','미친상승','불장','역대급'],
+  positive: ['상승','매수','호재','돌파','반등','강세','기대','수익','실적개선','추천','좋은','긍정','성장','흑자','호실적','저평가','목표가','상향','모아가자','존버','매력적','오르','올라','갈거','간다','개꿀','굿','좋다','기회','바닥','매집','줍줍','저가매수','물타기','개좋','ㅋㅋ좋','가즈아','화이팅','축하','수익인증','익절','떡상','개꿀','레전드','찐이다','존맛','갓','핵이득'],
+  strongNegative: ['급락','폭락','하한가','깡통','반토막','대폭락','대참사','물린','쪽박','망','개폭락','떡락','존망','핵폭락','개망','미친하락','개잡주','쓰레기주','먹튀','사기','나락','지옥','개거품','대참사'],
+  negative: ['하락','매도','악재','손절','약세','우려','손실','실적악화','위험','나쁜','부정','적자','고평가','하향','빠진','떨어','떨어진','물려','빠질','내려','걱정','불안','위기','폭망','팔자','개미털기','못하','안좋','삼성망','ㅠ',
+    // 커뮤니티 비속어/은어 (strongNegative와 중복 제거)
+    '쓰레기','거지','ㅅㅂ','시발','ㅂㅅ','병신','ㄱㅅㄲ','개새','씹','좆','지랄','미친','개못','망했','망할','폭삭','폭망','꼴받','열받','어이없','한심','답없','후회','최악','거품','허수','조작','작전','세력놈','ㅠㅠ','ㅜㅜ','아놔','에휴','짜증','개별로','별로'],
   analyze(text) {
     if (!text) return { score: 0, label: '중립' };
     let score = 0;
-    this.strongPositive.forEach(w => { if (text.includes(w)) score += 2; });
-    this.positive.forEach(w => { if (text.includes(w)) score += 1; });
-    this.strongNegative.forEach(w => { if (text.includes(w)) score -= 2; });
-    this.negative.forEach(w => { if (text.includes(w)) score -= 1; });
+    const found = { positive: [], negative: [] };
+    this.strongPositive.forEach(w => { if (text.includes(w)) { score += 2; found.positive.push(w); } });
+    this.positive.forEach(w => { if (text.includes(w)) { score += 1; found.positive.push(w); } });
+    this.strongNegative.forEach(w => { if (text.includes(w)) { score -= 2; found.negative.push(w); } });
+    this.negative.forEach(w => { if (text.includes(w)) { score -= 1; found.negative.push(w); } });
     let label = '중립';
     if (score >= 2) label = '매우 긍정';
     else if (score >= 1) label = '긍정';
     else if (score <= -2) label = '매우 부정';
     else if (score <= -1) label = '부정';
-    return { score, label };
+    return { score, label, positiveWords: found.positive, negativeWords: found.negative };
   }
 };
+
+// ===== 하이브리드 감성분석 (FinBert AI + 키워드 보정) =====
+function hybridSentiment(finbertResult, text) {
+  if (!finbertResult) return null;
+  const kw = KoreanSentiment.analyze(text);
+
+  // 키워드 신호가 강하고 AI가 중립이면 → 키워드로 보정
+  const kwStrong = Math.abs(kw.score) >= 2; // 강한 키워드 신호
+  const aiNeutral = finbertResult.label === '중립';
+  const aiLowConf = finbertResult.score < 80; // AI 확신도 낮음
+
+  let finalLabel = finbertResult.label;
+  let corrected = false;
+
+  if (kwStrong && aiNeutral) {
+    // AI가 중립인데 키워드가 강하면 → 키워드 결과 채택
+    finalLabel = kw.label;
+    if (finalLabel === '매우 긍정') finalLabel = '긍정';
+    if (finalLabel === '매우 부정') finalLabel = '부정';
+    corrected = true;
+  } else if (kwStrong && aiLowConf) {
+    // AI 확신도 낮고 키워드 강하면 → 키워드 방향이 AI와 다를 때만 보정
+    const kwDir = kw.score > 0 ? '긍정' : kw.score < 0 ? '부정' : '중립';
+    if (kwDir !== finbertResult.label && kwDir !== '중립') {
+      finalLabel = kwDir;
+      corrected = true;
+    }
+  }
+
+  return {
+    label: finalLabel,
+    score: finbertResult.score,
+    scores: finbertResult.scores,
+    model: 'hybrid',
+    aiLabel: finbertResult.label,
+    kwLabel: kw.label,
+    kwScore: kw.score,
+    corrected,
+    positiveWords: kw.positiveWords,
+    negativeWords: kw.negativeWords,
+  };
+}
 
 // ===== Collectors =====
 async function collectExchangeRates() {
@@ -501,19 +547,24 @@ async function collectSentiments() {
   const allTitles = allPosts.map(p => p.title);
   const finbertResults = await analyzeWithFinBert(allTitles);
   const useFinBert = finbertResults && finbertResults.length === allTitles.length;
-  const sentimentModel = useFinBert ? 'finbert' : 'keyword';
+  const sentimentModel = useFinBert ? 'hybrid' : 'keyword';
   console.log(`[Collect] 감성분석 모델: ${sentimentModel} (게시글 ${allTitles.length}건)`);
 
-  // 3단계: 게시글에 감성 결과 부착
+  // 3단계: 게시글에 감성 결과 부착 (하이브리드 보정 적용)
+  let correctedCount = 0;
   if (useFinBert) {
-    allPosts.forEach((p, i) => { p.sentiment = finbertResults[i]; });
+    allPosts.forEach((p, i) => {
+      p.sentiment = hybridSentiment(finbertResults[i], p.title);
+      if (p.sentiment.corrected) correctedCount++;
+    });
+    console.log(`[Collect] 하이브리드 보정: ${correctedCount}/${allPosts.length}건 키워드 보정됨`);
   } else {
     allPosts.forEach(p => {
       const r = KoreanSentiment.analyze(p.title);
       let label = r.label;
       if (label === '매우 긍정') label = '긍정';
       if (label === '매우 부정') label = '부정';
-      p.sentiment = { label, score: Math.abs(r.score) * 10, model: 'keyword' };
+      p.sentiment = { label, score: Math.abs(r.score) * 10, model: 'keyword', positiveWords: r.positiveWords, negativeWords: r.negativeWords };
     });
   }
 
@@ -522,12 +573,11 @@ async function collectSentiments() {
     const posts = stockPostMap[t.name];
     if (!posts || posts.length === 0) continue;
 
-    // 전체 posts에 대해 FinBert 분석 (배치에는 상위 5개만 있으므로 나머지는 키워드 분석)
+    // 전체 posts에 대해 하이브리드 분석 (배치에는 상위 5개만 있으므로 나머지는 키워드 분석)
     let pos = 0, neg = 0, neu = 0;
     if (useFinBert) {
-      // 상위 5개는 FinBert 결과 사용, 나머지는 키워드 fallback
+      // 상위 5개는 하이브리드 결과 사용, 나머지는 키워드 fallback
       const topPosts = allPosts.filter(p => p.stock === t.name);
-      const topTitles = new Set(topPosts.map(p => p.title));
       posts.forEach(p => {
         const top = topPosts.find(tp => tp.title === p.title);
         if (top && top.sentiment) {
@@ -625,15 +675,17 @@ async function main() {
     const newsFinbert = await analyzeWithFinBert(newsTitles);
     if (newsFinbert && newsFinbert.length === newsTitles.length) {
       let pos = 0, neg = 0, neu = 0;
+      let newsCorrected = 0;
       news.forEach((n, i) => {
-        n.sentiment = newsFinbert[i];
-        if (newsFinbert[i].label === '긍정') pos++;
-        else if (newsFinbert[i].label === '부정') neg++;
+        n.sentiment = hybridSentiment(newsFinbert[i], n.title);
+        if (n.sentiment.corrected) newsCorrected++;
+        if (n.sentiment.label === '긍정') pos++;
+        else if (n.sentiment.label === '부정') neg++;
         else neu++;
       });
       const total = news.length || 1;
-      newsSentiment = { positive: Math.round(pos / total * 100), neutral: Math.round(neu / total * 100), negative: Math.round(neg / total * 100), model: 'finbert' };
-      console.log(`[Collect] 뉴스 감성분석 (FinBert): 긍정${newsSentiment.positive}% 중립${newsSentiment.neutral}% 부정${newsSentiment.negative}%`);
+      newsSentiment = { positive: Math.round(pos / total * 100), neutral: Math.round(neu / total * 100), negative: Math.round(neg / total * 100), model: 'hybrid' };
+      console.log(`[Collect] 뉴스 감성분석 (hybrid): 긍정${newsSentiment.positive}% 중립${newsSentiment.neutral}% 부정${newsSentiment.negative}% (보정 ${newsCorrected}건)`);
     } else {
       // 키워드 fallback
       let pos = 0, neg = 0, neu = 0;
