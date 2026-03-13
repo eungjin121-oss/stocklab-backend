@@ -752,7 +752,7 @@ async function main() {
           const key = `${p.title}||${p.source}`;
           if (!seen.has(key)) { seen.add(key); merged.push(p); }
         }
-        communityPosts = merged.slice(0, 200);
+        communityPosts = merged.slice(0, 500);
         console.log(`[Collect] 커뮤니티 누적: 신규 ${newPosts.length} + 기존 ${prevPosts.length} → 병합 ${merged.length} → 저장 ${communityPosts.length}건`);
       }
     }
