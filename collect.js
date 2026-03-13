@@ -158,15 +158,7 @@ function timeAgo(date) {
   return `${Math.floor(days / 7)}주 전`;
 }
 
-function generateNearHistory(current, count) {
-  const arr = [];
-  for (let i = count - 1; i >= 0; i--) {
-    const variance = current * 0.005 * (Math.random() - 0.5);
-    arr.push(Math.round((current + variance * (i + 1)) * 100) / 100);
-  }
-  arr[arr.length - 1] = current;
-  return arr;
-}
+// generateNearHistory 삭제됨 - 실제 데이터만 사용
 
 // ===== FinBert AI 감성분석 =====
 async function analyzeWithFinBert(texts) {
@@ -363,7 +355,7 @@ async function collectExchangeRates() {
       { pair: 'THB/KRW', rate: krw / data.rates.THB, group: '아시아' },
     ].map(p => {
       const value = Math.round(p.rate * 100) / 100;
-      return { pair: p.pair, value, change: 0, history: generateNearHistory(value, 8), live: true, group: p.group, demoFields: ['change','history'] };
+      return { pair: p.pair, value, change: 0, history: [], live: true, group: p.group };
     });
   } catch (e) { console.warn('[Collect] 환율 실패:', e.message); return null; }
 }
@@ -421,6 +413,90 @@ const MAIN_STOCKS = [
   { code: '207940', name: '삼성바이오로직스', sector: '바이오' },
 ];
 
+// ===== 네이버 금융 재무지표 스크래핑 (PER, PBR, 배당률, 시총) =====
+async function scrapeNaverFinancials(code) {
+  try {
+    const html = await fetchText(`https://finance.naver.com/item/main.naver?code=${code}`, CONFIG.FETCH_TIMEOUT);
+    const $ = cheerio.load(html);
+    const result = {};
+
+    // 시가총액: #_market_sum 또는 #_totalMarketValue
+    const marketCapEl = $('#_market_sum, #_totalMarketValue');
+    if (marketCapEl.length) {
+      const raw = marketCapEl.text().replace(/[\s,원조억]/g, '').trim();
+      // 네이버는 "억 원" 단위 표시 — 전체 텍스트에서 파싱
+      const fullText = marketCapEl.closest('td, em').text().replace(/\s+/g, ' ').trim();
+      // 시총을 억 단위로 가져오기
+      const numMatch = marketCapEl.text().replace(/[^\d,]/g, '').replace(/,/g, '');
+      if (numMatch) {
+        const num = parseInt(numMatch);
+        if (num >= 10000) {
+          const jo = num / 10000;
+          result.marketCap = jo >= 10 ? Math.round(jo) + '조' : jo.toFixed(1).replace(/\.0$/, '') + '조';
+        } else result.marketCap = num.toLocaleString() + '억';
+      }
+    }
+
+    // PER, PBR, 배당률: 종목 요약 테이블에서 가져오기
+    const tables = $('table');
+    tables.each((_, table) => {
+      $(table).find('tr').each((_, tr) => {
+        const text = $(tr).text().replace(/\s+/g, ' ');
+        // PER
+        if (text.includes('PER') && !result.per) {
+          const m = text.match(/PER\s*[\(（].*?[\)）]?\s*([\d,.]+)/);
+          if (m) result.per = parseFloat(m[1].replace(/,/g, ''));
+        }
+        // PBR
+        if (text.includes('PBR') && !result.pbr) {
+          const m = text.match(/PBR\s*([\d,.]+)/);
+          if (m) result.pbr = parseFloat(m[1].replace(/,/g, ''));
+        }
+        // 배당수익률
+        if (text.includes('배당수익률') && !result.divYield) {
+          const m = text.match(/배당수익률\s*([\d,.]+)/);
+          if (m) result.divYield = parseFloat(m[1].replace(/,/g, ''));
+        }
+      });
+    });
+
+    // 대안: em 태그에서 직접 추출
+    if (!result.per || !result.pbr) {
+      $('em').each((_, el) => {
+        const id = $(el).attr('id') || '';
+        const val = $(el).text().replace(/,/g, '').trim();
+        if (id === '_per' && !result.per) result.per = parseFloat(val) || null;
+        if (id === '_pbr' && !result.pbr) result.pbr = parseFloat(val) || null;
+        if (id === '_dvr' && !result.divYield) result.divYield = parseFloat(val) || null;
+      });
+    }
+
+    // 시총 대안: "시가총액" 행 텍스트에서 추출
+    if (!result.marketCap) {
+      $('td, th').each((_, el) => {
+        const text = $(el).text();
+        if (text.includes('시가총액')) {
+          const next = $(el).next('td, em');
+          if (next.length) {
+            const raw = next.text().replace(/[^\d]/g, '');
+            if (raw) {
+              const num = parseInt(raw);
+              if (num > 10000) result.marketCap = Math.round(num / 10000) + '조';
+              else if (num > 0) result.marketCap = num.toLocaleString() + '억';
+            }
+          }
+        }
+      });
+    }
+
+    const hasData = result.per || result.pbr || result.divYield || result.marketCap;
+    return hasData ? result : null;
+  } catch (e) {
+    console.warn(`[Collect] 네이버 재무 ${code} 실패:`, e.message);
+    return null;
+  }
+}
+
 async function collectStocks() {
   const results = [];
   for (let i = 0; i < MAIN_STOCKS.length; i += 3) {
@@ -435,6 +511,29 @@ async function collectStocks() {
     }
     if (i + 3 < MAIN_STOCKS.length) await sleep(1000);
   }
+
+  // 네이버 금융에서 재무지표 수집 (PER/PBR/배당률/시총)
+  if (results.length > 0) {
+    console.log('[Collect] 네이버 금융 재무지표 수집 시작...');
+    for (let i = 0; i < results.length; i += 3) {
+      const batch = results.slice(i, i + 3);
+      const fundResults = await Promise.allSettled(batch.map(s => scrapeNaverFinancials(s.code)));
+      for (let j = 0; j < batch.length; j++) {
+        const fund = fundResults[j].status === 'fulfilled' ? fundResults[j].value : null;
+        if (fund) {
+          if (fund.per != null && !isNaN(fund.per)) batch[j].per = fund.per;
+          if (fund.pbr != null && !isNaN(fund.pbr)) batch[j].pbr = fund.pbr;
+          if (fund.divYield != null && !isNaN(fund.divYield)) batch[j].divYield = fund.divYield;
+          else if (fund.divYield == null) batch[j].divYield = 0;
+          if (fund.marketCap) batch[j].marketCap = fund.marketCap;
+        }
+      }
+      if (i + 3 < results.length) await sleep(500);
+    }
+    const withFund = results.filter(s => s.per || s.pbr || s.divYield || s.marketCap).length;
+    console.log(`[Collect] 네이버 재무지표: ${withFund}/${results.length}개 종목 수집 완료`);
+  }
+
   return results.length > 0 ? results : null;
 }
 
@@ -495,7 +594,7 @@ async function collectYouTube() {
         const rawTitle = $(item).find('title').text();
         const source = $(item).find('source').text();
         const pubDate = $(item).find('pubDate').text();
-        allItems.push({ title: rawTitle.replace(/\s*-\s*[^-]+$/, '').trim() || rawTitle, channel: source || '투자 채널', views: '', time: timeAgo(new Date(pubDate)), live: true });
+        allItems.push({ title: rawTitle.replace(/\s*-\s*[^-]+$/, '').trim() || rawTitle, channel: source || '투자 채널', time: timeAgo(new Date(pubDate)), live: true });
       });
     } catch (e) { /* skip */ }
   }
@@ -510,18 +609,18 @@ function extractTrends(news) {
   const keywords = [];
   candidates.forEach(word => {
     const matches = allText.match(new RegExp(word, 'g'));
-    if (matches) keywords.push({ word, count: matches.length * 50 + Math.floor(Math.random() * 100) });
+    if (matches) keywords.push({ word, count: matches.length });
   });
   keywords.sort((a, b) => b.count - a.count);
-  return keywords.slice(0, 16).map((k, i) => ({ word: k.word, count: k.count, size: i < 2 ? 5 : i < 5 ? 4 : i < 8 ? 3 : i < 12 ? 2 : 1, live: true, demoFields: ['count'] }));
+  return keywords.slice(0, 16).map((k, i) => ({ word: k.word, count: k.count, size: i < 2 ? 5 : i < 5 ? 4 : i < 8 ? 3 : i < 12 ? 2 : 1, live: true }));
 }
 
 const ETF_DEFS = [
-  { name: 'TIGER S&P500', code: '360750', fee: 0.07, topHolding: 'AAPL 7.2%' },
-  { name: 'KODEX 200', code: '069500', fee: 0.15, topHolding: '삼성전자 25%' },
-  { name: 'ACE 미국배당다우존스', code: '402460', fee: 0.12, topHolding: 'JNJ 4.1%' },
-  { name: 'TIGER 미국나스닥100', code: '133690', fee: 0.07, topHolding: 'MSFT 8.5%' },
-  { name: 'KODEX 배당가치', code: '290130', fee: 0.12, topHolding: '하나금융 6.8%' },
+  { name: 'TIGER S&P500', code: '360750' },
+  { name: 'KODEX 200', code: '069500' },
+  { name: 'ACE 미국배당다우존스', code: '402460' },
+  { name: 'TIGER 미국나스닥100', code: '133690' },
+  { name: 'KODEX 배당가치', code: '290130' },
 ];
 
 async function collectETFs() {
@@ -537,7 +636,7 @@ async function collectETFs() {
         const cur = closes[closes.length - 1] || quote.price;
         const m1y = closes.length > 250 ? closes[closes.length - 251] : closes[0];
         const return1y = m1y ? Math.round((cur - m1y) / m1y * 1000) / 10 : 0;
-        results.push({ name: def.name, code: def.code, fee: def.fee, price: quote.price, change: quote.change, changePercent: quote.changePercent, return1y, return3y: Math.round(return1y * 2.5 * 10) / 10, aum: '-', divYield: def.code === '290130' ? 4.2 : def.code === '402460' ? 3.5 : def.code === '069500' ? 1.8 : def.code === '133690' ? 0.5 : 1.2, topHolding: def.topHolding, history: quote.history, fullCloses: quote.fullCloses, timestamps: quote.timestamps, live: true, demoFields: ['fee','divYield','topHolding','return3y','aum'] });
+        results.push({ name: def.name, code: def.code, price: quote.price, change: quote.change, changePercent: quote.changePercent, return1y, history: quote.history, fullCloses: quote.fullCloses, timestamps: quote.timestamps, live: true });
       }
     }
     if (i + 3 < ETF_DEFS.length) await sleep(1000);
