@@ -172,15 +172,27 @@ async function collectExchangeRates() {
     if (data.result !== 'success') throw new Error('API error');
     const krw = data.rates.KRW;
     return [
-      { pair: 'USD/KRW', rate: krw },
-      { pair: 'EUR/KRW', rate: krw / data.rates.EUR },
-      { pair: 'JPY/KRW', rate: krw / data.rates.JPY },
-      { pair: 'CNY/KRW', rate: krw / data.rates.CNY },
+      { pair: 'USD/KRW', rate: krw, group: '주요' },
+      { pair: 'EUR/KRW', rate: krw / data.rates.EUR, group: '주요' },
+      { pair: 'JPY/KRW', rate: krw / data.rates.JPY, group: '아시아' },
+      { pair: 'CNY/KRW', rate: krw / data.rates.CNY, group: '아시아' },
+      { pair: 'GBP/KRW', rate: krw / data.rates.GBP, group: '주요' },
+      { pair: 'AUD/KRW', rate: krw / data.rates.AUD, group: '주요' },
+      { pair: 'SGD/KRW', rate: krw / data.rates.SGD, group: '아시아' },
+      { pair: 'THB/KRW', rate: krw / data.rates.THB, group: '아시아' },
     ].map(p => {
       const value = Math.round(p.rate * 100) / 100;
-      return { pair: p.pair, value, change: 0, history: generateNearHistory(value, 8), live: true, demoFields: ['change','history'] };
+      return { pair: p.pair, value, change: 0, history: generateNearHistory(value, 8), live: true, group: p.group, demoFields: ['change','history'] };
     });
   } catch (e) { console.warn('[Collect] 환율 실패:', e.message); return null; }
+}
+
+async function collectDXY() {
+  try {
+    const quote = await getYahooQuote('DX=F');
+    if (!quote) return null;
+    return { ...quote, name: 'US Dollar Index', symbol: 'DX=F' };
+  } catch (e) { console.warn('[Collect] DXY 실패:', e.message); return null; }
 }
 
 async function getYahooQuote(symbol) {
@@ -593,8 +605,8 @@ async function main() {
   const startTime = Date.now();
 
   // Phase 1: 병렬 수집
-  const [fxResult, indicesResult, newsResult, calendarResult, youtubeResult, usdkrwResult, baseRatesResult] = await Promise.allSettled([
-    collectExchangeRates(), collectIndices(), collectNews(), collectCalendar(), collectYouTube(), collectUsdKrwChart(), collectBaseRates(),
+  const [fxResult, indicesResult, newsResult, calendarResult, youtubeResult, usdkrwResult, baseRatesResult, dxyResult] = await Promise.allSettled([
+    collectExchangeRates(), collectIndices(), collectNews(), collectCalendar(), collectYouTube(), collectUsdKrwChart(), collectBaseRates(), collectDXY(),
   ]);
 
   const exchangeRates = fxResult.status === 'fulfilled' ? fxResult.value : null;
@@ -604,6 +616,7 @@ async function main() {
   const youtube = youtubeResult.status === 'fulfilled' ? youtubeResult.value : null;
   const usdKrwChart = usdkrwResult.status === 'fulfilled' ? usdkrwResult.value : null;
   const baseRates = baseRatesResult.status === 'fulfilled' ? baseRatesResult.value : null;
+  const dxy = dxyResult.status === 'fulfilled' ? dxyResult.value : null;
 
   // Phase 2: 뉴스 감성분석 (FinBert AI)
   let newsSentiment = null;
@@ -663,7 +676,7 @@ async function main() {
 
   // 결과 저장
   const data = {
-    indices, exchangeRates, news, briefing, stocks, etfs, trends, calendar, youtube, sentiments, communityPosts, newsSentiment, usdKrwChart, baseRates,
+    indices, exchangeRates, news, briefing, stocks, etfs, trends, calendar, youtube, sentiments, communityPosts, newsSentiment, usdKrwChart, baseRates, dxy,
     updatedAt: new Date().toISOString(),
   };
 
