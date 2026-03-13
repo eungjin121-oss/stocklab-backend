@@ -485,9 +485,9 @@ async function collectDCInsideGallery() {
       const d = new Date(p.date);
       return !isNaN(d.getTime()) && (Date.now() - d.getTime()) < 3 * 24 * 60 * 60 * 1000;
     });
-    const targetPosts = recentPosts.length > 0 ? recentPosts : posts.slice(0, 10);
-    // 상위 10개 본문 미리보기
-    for (const p of targetPosts.slice(0, 10)) {
+    const targetPosts = recentPosts.length > 0 ? recentPosts : posts.slice(0, 20);
+    // 상위 20개 본문 미리보기
+    for (const p of targetPosts.slice(0, 20)) {
       try {
         const detailUrl = `https://gall.dcinside.com/mgallery/board/view?id=stockus&no=${p.postNo}`;
         const ctrl2 = new AbortController();
@@ -506,7 +506,7 @@ async function collectDCInsideGallery() {
       await sleep(500);
     }
     // postNo 정리 + URL 생성
-    const finalPosts = targetPosts.slice(0, 10);
+    const finalPosts = targetPosts.slice(0, 20);
     finalPosts.forEach(p => {
       if (!p.url && p.postNo) p.url = `https://gall.dcinside.com/mgallery/board/view?id=stockus&no=${p.postNo}`;
       delete p.postNo;
@@ -534,7 +534,7 @@ async function collectSentiments() {
       const posts = await collectNaverDiscussion(t.code);
       if (posts && posts.length > 0) {
         stockPostMap[t.name] = posts;
-        allPosts.push(...posts.slice(0, 5).map(p => ({ ...p, stock: t.name })));
+        allPosts.push(...posts.slice(0, 10).map(p => ({ ...p, stock: t.name })));
       }
       await sleep(500);
     } catch (e) { /* skip */ }
@@ -544,7 +544,7 @@ async function collectSentiments() {
   try {
     const dcPosts = await collectDCInsideGallery();
     if (dcPosts.length > 0) {
-      allPosts.push(...dcPosts.slice(0, 10));
+      allPosts.push(...dcPosts.slice(0, 20));
       console.log(`[Collect] DC 게시글 ${dcPosts.length}건 추가`);
     }
   } catch (e) { console.warn('[Collect] DC 통합 실패:', e.message); }
