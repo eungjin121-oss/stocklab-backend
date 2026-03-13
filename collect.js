@@ -441,7 +441,9 @@ async function collectNaverDiscussion(stockCode) {
       if (!titleEl.length) return;
       const title = (titleEl.attr('title') || titleEl.text() || '').trim();
       if (!title) return;
-      posts.push({ title, author: $(cells[2]).text().trim(), date: $(cells[0]).text().trim(), views: parseInt($(cells[3]).text().trim()) || 0, likes: parseInt($(cells[4]).text().trim()) || 0, dislikes: parseInt($(cells[5]).text().trim()) || 0, source: '네이버증권', live: true });
+      const href = titleEl.attr('href') || '';
+      const url = href ? `https://finance.naver.com${href}` : '';
+      posts.push({ title, url, author: $(cells[2]).text().trim(), date: $(cells[0]).text().trim(), views: parseInt($(cells[3]).text().trim()) || 0, likes: parseInt($(cells[4]).text().trim()) || 0, dislikes: parseInt($(cells[5]).text().trim()) || 0, source: '네이버증권', live: true });
     });
     return posts.length > 0 ? posts : null;
   } catch (e) { console.warn(`[Collect] 네이버 토론방 ${stockCode} 실패:`, e.message); return null; }
@@ -499,12 +501,16 @@ async function collectDCInsideGallery() {
           p.preview = body ? body.substring(0, 150) : null;
         }
       } catch { p.preview = null; }
+      p.url = `https://gall.dcinside.com/mgallery/board/view?id=stockus&no=${p.postNo}`;
       delete p.postNo;
       await sleep(500);
     }
-    // postNo 정리
+    // postNo 정리 + URL 생성
     const finalPosts = targetPosts.slice(0, 10);
-    finalPosts.forEach(p => delete p.postNo);
+    finalPosts.forEach(p => {
+      if (!p.url && p.postNo) p.url = `https://gall.dcinside.com/mgallery/board/view?id=stockus&no=${p.postNo}`;
+      delete p.postNo;
+    });
     console.log(`[Collect] DC미국주식갤러리: ${finalPosts.length}건 수집`);
     return finalPosts;
   } catch (e) {
