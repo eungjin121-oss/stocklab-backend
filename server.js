@@ -117,15 +117,7 @@ function timeAgo(date) {
   return `${Math.floor(days / 7)}주 전`;
 }
 
-function generateNearHistory(current, count) {
-  const arr = [];
-  for (let i = count - 1; i >= 0; i--) {
-    const variance = current * 0.005 * (Math.random() - 0.5);
-    arr.push(Math.round((current + variance * (i + 1)) * 100) / 100);
-  }
-  arr[arr.length - 1] = current;
-  return arr;
-}
+// generateNearHistory 삭제됨 - 실제 데이터만 사용
 
 // ===== Data Collectors =====
 
@@ -143,7 +135,7 @@ async function collectExchangeRates() {
     ];
     return pairDefs.map(p => {
       const value = Math.round(p.rate * 100) / 100;
-      return { pair: p.pair, value, change: 0, history: generateNearHistory(value, 8), live: true };
+      return { pair: p.pair, value, change: 0, history: [], live: true };
     });
   } catch (e) { console.warn('[Collect] 환율 실패:', e.message); return null; }
 }
@@ -159,12 +151,15 @@ async function getYahooQuote(symbol) {
     const closes = (result.indicators.quote[0].close || []).filter(v => v != null);
     if (closes.length === 0) throw new Error('No price data');
     const price = meta.regularMarketPrice;
-    const prevClose = meta.chartPreviousClose || meta.previousClose || closes[closes.length - 2] || price;
+    const dailyPrevClose = closes.length >= 2 ? closes[closes.length - 2] : price;
+    const prevClose3mo = meta.chartPreviousClose || closes[0] || price;
     return {
       price: Math.round(price),
-      prevClose: Math.round(prevClose),
-      change: Math.round(price - prevClose),
-      changePercent: Math.round((price - prevClose) / prevClose * 10000) / 100,
+      prevClose: Math.round(dailyPrevClose),
+      change: Math.round(price - dailyPrevClose),
+      changePercent: Math.round((price - dailyPrevClose) / dailyPrevClose * 10000) / 100,
+      change3mo: Math.round(price - prevClose3mo),
+      changePercent3mo: Math.round((price - prevClose3mo) / prevClose3mo * 10000) / 100,
       history: closes.slice(-8).map(v => Math.round(v)),
       fullCloses: closes.map(v => Math.round(v)),
       timestamps: result.timestamp,
@@ -322,7 +317,7 @@ async function collectYouTube() {
           const source = $(item).find('source').text();
           const pubDate = $(item).find('pubDate').text();
           const title = rawTitle.replace(/\s*-\s*[^-]+$/, '').trim() || rawTitle;
-          allItems.push({ title, channel: source || '투자 채널', views: '', time: timeAgo(new Date(pubDate)), live: true });
+          allItems.push({ title, channel: source || '투자 채널', time: timeAgo(new Date(pubDate)), live: true });
         });
       } catch (e) { /* skip */ }
     }
@@ -352,7 +347,7 @@ function extractTrends(news) {
   candidates.forEach(word => {
     const regex = new RegExp(word, 'g');
     const matches = allText.match(regex);
-    if (matches) keywords.push({ word, count: matches.length * 50 + Math.floor(Math.random() * 100) });
+    if (matches) keywords.push({ word, count: matches.length });
   });
   keywords.sort((a, b) => b.count - a.count);
   return keywords.slice(0, 16).map((k, i) => ({
@@ -364,11 +359,11 @@ function extractTrends(news) {
 
 // 10. ETF 데이터
 const ETF_DEFS = [
-  { name: 'TIGER S&P500', code: '360750', fee: 0.07, topHolding: 'AAPL 7.2%' },
-  { name: 'KODEX 200', code: '069500', fee: 0.15, topHolding: '삼성전자 25%' },
-  { name: 'ACE 미국배당다우존스', code: '402460', fee: 0.12, topHolding: 'JNJ 4.1%' },
-  { name: 'TIGER 미국나스닥100', code: '133690', fee: 0.07, topHolding: 'MSFT 8.5%' },
-  { name: 'KODEX 배당가치', code: '290130', fee: 0.12, topHolding: '하나금융 6.8%' },
+  { name: 'TIGER S&P500', code: '360750' },
+  { name: 'KODEX 200', code: '069500' },
+  { name: 'ACE 미국배당다우존스', code: '402460' },
+  { name: 'TIGER 미국나스닥100', code: '133690' },
+  { name: 'KODEX 배당가치', code: '290130' },
 ];
 
 async function collectETFs() {
@@ -388,12 +383,9 @@ async function collectETFs() {
           const m1y = closes.length > 250 ? closes[closes.length - 251] : closes[0];
           const return1y = m1y ? Math.round((cur - m1y) / m1y * 1000) / 10 : 0;
           results.push({
-            name: def.name, code: def.code, fee: def.fee,
+            name: def.name, code: def.code,
             price: quote.price, change: quote.change, changePercent: quote.changePercent,
-            return1y, return3y: Math.round(return1y * 2.5 * 10) / 10,
-            aum: '-',
-            divYield: def.code === '290130' ? 4.2 : def.code === '402460' ? 3.5 : def.code === '069500' ? 1.8 : def.code === '133690' ? 0.5 : 1.2,
-            topHolding: def.topHolding, history: quote.history,
+            return1y, history: quote.history,
             fullCloses: quote.fullCloses, timestamps: quote.timestamps, live: true,
           });
         }

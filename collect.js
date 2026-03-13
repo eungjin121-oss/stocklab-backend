@@ -378,11 +378,16 @@ async function getYahooQuote(symbol) {
     const closes = (result.indicators.quote[0].close || []).filter(v => v != null);
     if (closes.length === 0) throw new Error('No price data');
     const price = meta.regularMarketPrice;
-    const prevClose = meta.chartPreviousClose || meta.previousClose || closes[closes.length - 2] || price;
+    // 일일 변동: closes 배열의 마지막-1 값 (어제 종가) 사용
+    // chartPreviousClose는 range 시작 시점 (3mo)이므로 일일 변동에 부적합
+    const dailyPrevClose = closes.length >= 2 ? closes[closes.length - 2] : price;
+    const prevClose3mo = meta.chartPreviousClose || closes[0] || price;
     return {
-      price: Math.round(price), prevClose: Math.round(prevClose),
-      change: Math.round(price - prevClose),
-      changePercent: Math.round((price - prevClose) / prevClose * 10000) / 100,
+      price: Math.round(price), prevClose: Math.round(dailyPrevClose),
+      change: Math.round(price - dailyPrevClose),
+      changePercent: Math.round((price - dailyPrevClose) / dailyPrevClose * 10000) / 100,
+      change3mo: Math.round(price - prevClose3mo),
+      changePercent3mo: Math.round((price - prevClose3mo) / prevClose3mo * 10000) / 100,
       history: closes.slice(-8).map(v => Math.round(v)),
       fullCloses: closes.map(v => Math.round(v)),
       timestamps: result.timestamp, live: true,
