@@ -7,6 +7,18 @@ const cheerio = require('cheerio');
 const fs = require('fs');
 const path = require('path');
 
+// ===== 수집 설정 =====
+const CONFIG = {
+  NAVER_POSTS_PER_STOCK: 10,
+  DC_POSTS_LIMIT: 20,
+  DC_BATCH_SIZE: 5,        // 병렬 크롤링 배치 크기
+  COMMUNITY_MAX_POSTS: 500, // 누적 최대
+  SLEEP_MS: 500,
+  FETCH_TIMEOUT: 12000,
+  DC_FETCH_TIMEOUT: 8000,
+  FINBERT_BATCH_SIZE: 32,
+};
+
 // ===== Firebase Firestore =====
 let db = null;
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
@@ -470,7 +482,7 @@ async function collectETFs() {
 
 async function collectUsdKrwChart() {
   try {
-    const data = await fetchJSON('https://query1.finance.yahoo.com/v8/finance/chart/KRW=X?interval=1d&range=3mo', 12000);
+    const data = await fetchJSON('https://query1.finance.yahoo.com/v8/finance/chart/KRW=X?interval=1d&range=3mo', CONFIG.FETCH_TIMEOUT);
     const result = data.chart.result[0];
     const rawCloses = result.indicators.quote[0].close || [];
     const rawTimestamps = result.timestamp || [];
@@ -489,7 +501,7 @@ async function collectUsdKrwChart() {
 
 async function collectNaverDiscussion(stockCode) {
   try {
-    const html = await fetchText(`https://finance.naver.com/item/board.naver?code=${stockCode}`, 12000);
+    const html = await fetchText(`https://finance.naver.com/item/board.naver?code=${stockCode}`, CONFIG.FETCH_TIMEOUT);
     const $ = cheerio.load(html);
     const posts = [];
     $('table.type2 tr').each((_, row) => {
@@ -543,28 +555,36 @@ async function collectDCInsideGallery() {
       const d = new Date(p.date);
       return !isNaN(d.getTime()) && (Date.now() - d.getTime()) < 3 * 24 * 60 * 60 * 1000;
     });
-    const targetPosts = recentPosts.length > 0 ? recentPosts : posts.slice(0, 20);
-    // 상위 20개 본문 미리보기
-    for (const p of targetPosts.slice(0, 20)) {
-      try {
+    const targetPosts = recentPosts.length > 0 ? recentPosts : posts.slice(0, CONFIG.DC_POSTS_LIMIT);
+    // 상위 게시글 본문 미리보기 (배치 병렬 처리)
+    const previewTargets = targetPosts.slice(0, CONFIG.DC_POSTS_LIMIT);
+    for (let bi = 0; bi < previewTargets.length; bi += CONFIG.DC_BATCH_SIZE) {
+      const batch = previewTargets.slice(bi, bi + CONFIG.DC_BATCH_SIZE);
+      const batchResults = await Promise.allSettled(batch.map(async (p) => {
         const detailUrl = `https://gall.dcinside.com/mgallery/board/view?id=stockus&no=${p.postNo}`;
         const ctrl2 = new AbortController();
-        const tid2 = setTimeout(() => ctrl2.abort(), 8000);
+        const tid2 = setTimeout(() => ctrl2.abort(), CONFIG.DC_FETCH_TIMEOUT);
         const dRes = await fetch(detailUrl, { signal: ctrl2.signal, headers: { ...headers, 'Referer': listUrl } });
         clearTimeout(tid2);
         if (dRes.ok) {
           const dHtml = await dRes.text();
           const d$ = cheerio.load(dHtml);
           const body = d$('.write_div').text().trim().replace(/\s+/g, ' ');
-          p.preview = body ? body.substring(0, 150) : null;
+          return body ? body.substring(0, 150) : null;
         }
-      } catch { p.preview = null; }
-      p.url = `https://gall.dcinside.com/mgallery/board/view?id=stockus&no=${p.postNo}`;
-      delete p.postNo;
-      await sleep(500);
+        return null;
+      }));
+      // 결과 반영: 실패한 요청은 preview=null
+      batch.forEach((p, i) => {
+        p.preview = batchResults[i].status === 'fulfilled' ? batchResults[i].value : null;
+        p.url = `https://gall.dcinside.com/mgallery/board/view?id=stockus&no=${p.postNo}`;
+        delete p.postNo;
+      });
+      // 배치 간에만 sleep 적용
+      if (bi + CONFIG.DC_BATCH_SIZE < previewTargets.length) await sleep(CONFIG.SLEEP_MS);
     }
     // postNo 정리 + URL 생성
-    const finalPosts = targetPosts.slice(0, 20);
+    const finalPosts = targetPosts.slice(0, CONFIG.DC_POSTS_LIMIT);
     finalPosts.forEach(p => {
       if (!p.url && p.postNo) p.url = `https://gall.dcinside.com/mgallery/board/view?id=stockus&no=${p.postNo}`;
       delete p.postNo;
@@ -577,12 +597,11 @@ async function collectDCInsideGallery() {
   }
 }
 
-async function collectSentiments() {
+async function collectCommunityPosts() {
   const targets = [
     { name: '삼성전자', code: '005930' }, { name: 'SK하이닉스', code: '000660' },
     { name: '현대차', code: '005380' }, { name: 'KB금융', code: '105560' }, { name: '카카오', code: '035720' },
   ];
-  const results = [];
   const allPosts = []; // 커뮤니티 글 목록 (콘텐츠 허브용)
   const stockPostMap = {}; // stock별 posts 매핑
 
@@ -592,9 +611,9 @@ async function collectSentiments() {
       const posts = await collectNaverDiscussion(t.code);
       if (posts && posts.length > 0) {
         stockPostMap[t.name] = posts;
-        allPosts.push(...posts.slice(0, 10).map(p => ({ ...p, stock: t.name })));
+        allPosts.push(...posts.slice(0, CONFIG.NAVER_POSTS_PER_STOCK).map(p => ({ ...p, stock: t.name })));
       }
-      await sleep(500);
+      await sleep(CONFIG.SLEEP_MS);
     } catch (e) { /* skip */ }
   }
 
@@ -602,19 +621,21 @@ async function collectSentiments() {
   try {
     const dcPosts = await collectDCInsideGallery();
     if (dcPosts.length > 0) {
-      allPosts.push(...dcPosts.slice(0, 20));
+      allPosts.push(...dcPosts.slice(0, CONFIG.DC_POSTS_LIMIT));
       console.log(`[Collect] DC 게시글 ${dcPosts.length}건 추가`);
     }
   } catch (e) { console.warn('[Collect] DC 통합 실패:', e.message); }
 
-  // 2단계: FinBert AI 배치 분석 시도
-  const allTitles = allPosts.map(p => p.title);
-  const finbertResults = await analyzeWithFinBert(allTitles);
-  const useFinBert = finbertResults && finbertResults.length === allTitles.length;
-  const sentimentModel = useFinBert ? 'hybrid' : 'keyword';
-  console.log(`[Collect] 감성분석 모델: ${sentimentModel} (게시글 ${allTitles.length}건)`);
+  return { allPosts, stockPostMap, targets };
+}
 
-  // 3단계: 게시글에 감성 결과 부착 (analyzeSentiment 헬퍼 사용)
+function collectSentiments(allPosts, stockPostMap, targets, finbertResults) {
+  // FinBert 결과 적용 (외부에서 전달받은 결과 사용)
+  const useFinBert = finbertResults && finbertResults.length === allPosts.length;
+  const sentimentModel = useFinBert ? 'hybrid' : 'keyword';
+  console.log(`[Collect] 감성분석 모델: ${sentimentModel} (게시글 ${allPosts.length}건)`);
+
+  // 게시글에 감성 결과 부착 (analyzeSentiment 헬퍼 사용)
   let correctedCount = 0;
   allPosts.forEach((p, i) => {
     p.sentiment = analyzeSentiment(p.title, useFinBert ? finbertResults[i] : null);
@@ -624,9 +645,10 @@ async function collectSentiments() {
     console.log(`[Collect] 하이브리드 보정: ${correctedCount}/${allPosts.length}건 키워드 보정됨`);
   }
 
-  // 4단계: 종목별 감성 집계 (전체 게시글 기준)
-  // 배치에 포함된 상위 게시글은 이미 3단계에서 sentiment 부착됨 → 재활용
+  // 종목별 감성 집계 (전체 게시글 기준)
+  // 배치에 포함된 상위 게시글은 이미 sentiment 부착됨 → 재활용
   // 나머지 게시글은 analyzeSentiment(키워드 fallback)로 부착
+  const results = [];
   for (const t of targets) {
     const posts = stockPostMap[t.name];
     if (!posts || posts.length === 0) continue;
@@ -634,7 +656,7 @@ async function collectSentiments() {
     const topPosts = allPosts.filter(p => p.stock === t.name);
     posts.forEach(p => {
       if (!p.sentiment) {
-        // 3단계 배치에 포함된 게시글의 결과 재활용
+        // 배치에 포함된 게시글의 결과 재활용
         const top = topPosts.find(tp => tp.title === p.title);
         p.sentiment = top && top.sentiment ? top.sentiment : analyzeSentiment(p.title, null);
       }
@@ -712,25 +734,7 @@ async function main() {
   const baseRates = baseRatesResult.status === 'fulfilled' ? baseRatesResult.value : null;
   const dxy = dxyResult.status === 'fulfilled' ? dxyResult.value : null;
 
-  // Phase 2: 뉴스 감성분석 (analyzeSentiment 헬퍼 사용)
-  let newsSentiment = null;
-  if (news && news.length > 0) {
-    const newsTitles = news.map(n => n.title);
-    const newsFinbert = await analyzeWithFinBert(newsTitles);
-    const useNewsFinBert = newsFinbert && newsFinbert.length === newsTitles.length;
-    let newsCorrected = 0;
-    news.forEach((n, i) => {
-      n.sentiment = analyzeSentiment(n.title, useNewsFinBert ? newsFinbert[i] : null);
-      if (n.sentiment.corrected) newsCorrected++;
-    });
-    const model = useNewsFinBert ? 'hybrid' : 'keyword';
-    newsSentiment = { ...aggregateSentiments(news), model };
-    if (useNewsFinBert) {
-      console.log(`[Collect] 뉴스 감성분석 (hybrid): 긍정${newsSentiment.positive}% 중립${newsSentiment.neutral}% 부정${newsSentiment.negative}% (보정 ${newsCorrected}건)`);
-    }
-  }
-
-  // Phase 2b: 뉴스 파생
+  // Phase 2: 뉴스 파생
   const briefing = news ? (() => {
     const today = new Date();
     const dateStr = `${today.getFullYear()}년 ${today.getMonth() + 1}월 ${today.getDate()}일`;
@@ -748,11 +752,42 @@ async function main() {
   await sleep(2000);
   const etfs = await collectETFs();
 
-  // Phase 4: 감성 분석 + 커뮤니티 글
+  // Phase 4: 커뮤니티 게시글 수집
   await sleep(2000);
-  const sentimentResult = await collectSentiments();
+  const { allPosts: communityAllPosts, stockPostMap, targets: sentimentTargets } = await collectCommunityPosts();
+
+  // Phase 5: FinBert AI 통합 감성분석 (커뮤니티 + 뉴스 타이틀을 합쳐서 1번만 호출)
+  const communityTitles = communityAllPosts.map(p => p.title);
+  const newsTitles = (news && news.length > 0) ? news.map(n => n.title) : [];
+  const allTitles = [...communityTitles, ...newsTitles];
+  const allFinbertResults = await analyzeWithFinBert(allTitles);
+  const useFinBert = allFinbertResults && allFinbertResults.length === allTitles.length;
+  console.log(`[Collect] FinBert 통합 호출: 커뮤니티 ${communityTitles.length}건 + 뉴스 ${newsTitles.length}건 = ${allTitles.length}건`);
+
+  // FinBert 결과 분리: 커뮤니티용 / 뉴스용
+  const communityFinbert = useFinBert ? allFinbertResults.slice(0, communityTitles.length) : null;
+  const newsFinbert = useFinBert ? allFinbertResults.slice(communityTitles.length) : null;
+
+  // 커뮤니티 감성분석 적용
+  const sentimentResult = collectSentiments(communityAllPosts, stockPostMap, sentimentTargets, communityFinbert);
   const sentiments = sentimentResult.sentiments;
   const newPosts = sentimentResult.communityPosts || [];
+
+  // 뉴스 감성분석 적용 (analyzeSentiment 헬퍼 사용)
+  let newsSentiment = null;
+  if (news && news.length > 0) {
+    const useNewsFinBert = newsFinbert && newsFinbert.length === newsTitles.length;
+    let newsCorrected = 0;
+    news.forEach((n, i) => {
+      n.sentiment = analyzeSentiment(n.title, useNewsFinBert ? newsFinbert[i] : null);
+      if (n.sentiment.corrected) newsCorrected++;
+    });
+    const model = useNewsFinBert ? 'hybrid' : 'keyword';
+    newsSentiment = { ...aggregateSentiments(news), model };
+    if (useNewsFinBert) {
+      console.log(`[Collect] 뉴스 감성분석 (hybrid): 긍정${newsSentiment.positive}% 중립${newsSentiment.neutral}% 부정${newsSentiment.negative}% (보정 ${newsCorrected}건)`);
+    }
+  }
 
   // 커뮤니티 게시글 누적 (Firestore DB에서 기존 데이터 읽기 → 신규 병합 → 중복 제거 → 최대 500개)
   let communityPosts = newPosts;
@@ -788,7 +823,7 @@ async function main() {
         const key = `${p.title}||${p.source}`;
         if (!seen.has(key)) { seen.add(key); merged.push(p); }
       }
-      communityPosts = merged.slice(0, 500);
+      communityPosts = merged.slice(0, CONFIG.COMMUNITY_MAX_POSTS);
       console.log(`[Collect] 커뮤니티 누적: 신규 ${newPosts.length} + 기존 ${prevPosts.length} → 병합 ${merged.length} → 저장 ${communityPosts.length}건`);
     }
   } catch (e) { console.warn('[Collect] 커뮤니티 누적 병합 실패:', e.message); }
