@@ -541,7 +541,7 @@ function fallbackBriefing(news) {
     date: `${dateStr} (${dayNames[today.getDay()]})`,
     content: news.slice(0, 5).map(n => n.title + (n.source ? ` (${n.source})` : '')),
     keywords: [...new Set(keywords)].slice(0, 6),
-    live: false,
+    live: true,
   };
 }
 
@@ -636,13 +636,13 @@ async function getFearGreedCached() {
     console.warn(`[Collect] Fear & Greed 수집 실패: ${e.message}`);
   }
 
-  // 수집 실패 시 만료된 캐시라도 사용 (live: false로 변경)
+  // 수집 실패 시 만료된 캐시라도 사용 (이전에 CNN에서 수집한 실제 데이터)
   try {
     if (fs.existsSync(FEAR_GREED_CACHE)) {
       const cached = JSON.parse(fs.readFileSync(FEAR_GREED_CACHE, 'utf-8'));
       const { _fetchedAt, ...data } = cached;
-      console.log('[Collect] Fear & Greed 만료 캐시 재사용 (DEMO)');
-      return { ...data, live: false };
+      console.log('[Collect] Fear & Greed 만료 캐시 재사용');
+      return data;
     }
   } catch (e) { /* ignore */ }
 
