@@ -609,7 +609,6 @@ async function generateAIBriefing(news) {
 
 // ===== Fear & Greed 캐시 수집 (12시간 TTL) =====
 async function getFearGreedCached() {
-  // 캐시 파일이 있고 12시간 이내면 재사용
   try {
     if (fs.existsSync(FEAR_GREED_CACHE)) {
       const cached = JSON.parse(fs.readFileSync(FEAR_GREED_CACHE, 'utf-8'));
@@ -617,33 +616,31 @@ async function getFearGreedCached() {
       if (age < DAILY_CACHE_TTL) {
         console.log(`[Collect] Fear & Greed 캐시 사용 (${Math.round(age / 3600000)}시간 전 수집)`);
         const { _fetchedAt, ...data } = cached;
-        return data;
+        return { ...data, _collectedAt: new Date(_fetchedAt).toISOString() };
       }
     }
   } catch (e) { /* 캐시 읽기 실패 → 새로 수집 */ }
 
-  // CNN API 호출
   try {
     const data = await collectFearGreed();
     if (data) {
-      // 캐시 저장
+      const now = Date.now();
       const dataDir = path.join(__dirname, 'data');
       if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-      fs.writeFileSync(FEAR_GREED_CACHE, JSON.stringify({ ...data, _fetchedAt: Date.now() }));
+      fs.writeFileSync(FEAR_GREED_CACHE, JSON.stringify({ ...data, _fetchedAt: now }));
       console.log(`[Collect] Fear & Greed 수집 성공 (score: ${data.score})`);
-      return data;
+      return { ...data, _collectedAt: new Date(now).toISOString() };
     }
   } catch (e) {
     console.warn(`[Collect] Fear & Greed 수집 실패: ${e.message}`);
   }
 
-  // 수집 실패 시 만료된 캐시라도 사용 (이전에 CNN에서 수집한 실제 데이터)
   try {
     if (fs.existsSync(FEAR_GREED_CACHE)) {
       const cached = JSON.parse(fs.readFileSync(FEAR_GREED_CACHE, 'utf-8'));
       const { _fetchedAt, ...data } = cached;
       console.log('[Collect] Fear & Greed 만료 캐시 재사용');
-      return data;
+      return { ...data, _collectedAt: new Date(_fetchedAt).toISOString() };
     }
   } catch (e) { /* ignore */ }
 
@@ -659,7 +656,7 @@ async function getBaseRatesCached() {
       if (age < DAILY_CACHE_TTL) {
         console.log(`[Collect] 기준금리 캐시 사용 (${Math.round(age / 3600000)}시간 전 수집)`);
         const { _fetchedAt, ...data } = cached;
-        return data;
+        return { ...data, _collectedAt: new Date(_fetchedAt).toISOString() };
       }
     }
   } catch (e) { /* 캐시 읽기 실패 → 새로 수집 */ }
@@ -667,23 +664,23 @@ async function getBaseRatesCached() {
   try {
     const data = await collectBaseRates();
     if (data && (data.kr?.live || data.us?.live)) {
+      const now = Date.now();
       const dataDir = path.join(__dirname, 'data');
       if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-      fs.writeFileSync(BASE_RATES_CACHE, JSON.stringify({ ...data, _fetchedAt: Date.now() }));
+      fs.writeFileSync(BASE_RATES_CACHE, JSON.stringify({ ...data, _fetchedAt: now }));
       console.log(`[Collect] 기준금리 수집 성공 (한국: ${data.kr?.value}%, 미국: ${data.us?.value}%)`);
-      return data;
+      return { ...data, _collectedAt: new Date(now).toISOString() };
     }
   } catch (e) {
     console.warn(`[Collect] 기준금리 수집 실패: ${e.message}`);
   }
 
-  // 실패 시 만료 캐시 재사용
   try {
     if (fs.existsSync(BASE_RATES_CACHE)) {
       const cached = JSON.parse(fs.readFileSync(BASE_RATES_CACHE, 'utf-8'));
       const { _fetchedAt, ...data } = cached;
       console.log('[Collect] 기준금리 만료 캐시 재사용');
-      return data;
+      return { ...data, _collectedAt: new Date(_fetchedAt).toISOString() };
     }
   } catch (e) { /* ignore */ }
 
@@ -765,11 +762,29 @@ async function main() {
   console.log(`[Collect] 커뮤니티 게시글: ${communityPosts.length}건 수집 → community_posts 컬렉션에 개별 저장`);
 
   // 결과 저장 (latest.json CDN fallback: communityPosts 최근 30개만)
+  const now = new Date().toISOString();
   const data = {
     indices, exchangeRates, news, briefing, stocks, etfs, trends, calendar, youtube, sentiments,
-    communityPosts: communityPosts.slice(0, CONFIG.COMMUNITY_CDN_POSTS), // CDN fallback용 최근 게시글
+    communityPosts: communityPosts.slice(0, CONFIG.COMMUNITY_CDN_POSTS),
     newsSentiment, usdKrwChart, baseRates, dxy, fearGreed,
-    updatedAt: new Date().toISOString(),
+    updatedAt: now,
+    // 항목별 개별 수집 일시
+    _collectedAt: {
+      indices: indices ? now : null,
+      exchangeRates: exchangeRates ? now : null,
+      news: news ? now : null,
+      briefing: briefing ? now : null,
+      stocks: stocks ? now : null,
+      etfs: etfs ? now : null,
+      calendar: calendar ? now : null,
+      youtube: youtube ? now : null,
+      sentiments: sentiments ? now : null,
+      newsSentiment: newsSentiment ? now : null,
+      usdKrwChart: usdKrwChart ? now : null,
+      dxy: dxy ? now : null,
+      baseRates: baseRates?._collectedAt || now,
+      fearGreed: fearGreed?._collectedAt || fearGreed?.timestamp || now,
+    },
   };
 
   const dataDir = path.join(__dirname, 'data');
