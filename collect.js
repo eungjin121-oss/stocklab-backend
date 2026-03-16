@@ -931,6 +931,85 @@ async function collectBaseRates() {
   }
 }
 
+// ===== AI Briefing =====
+function fallbackBriefing(news) {
+  if (!news || news.length === 0) return null;
+  const today = new Date();
+  const dateStr = `${today.getFullYear()}년 ${today.getMonth() + 1}월 ${today.getDate()}일`;
+  const dayNames = ['일','월','화','수','목','금','토'];
+  const allText = news.map(n => n.title).join(' ');
+  const candidates = ['삼성전자','SK하이닉스','현대차','FOMC','금리','환율','코스피','코스닥','반도체','AI','배당','실적','인플레','ETF','2차전지','바이오','원달러','증시','무역','수출'];
+  const keywords = candidates.filter(k => allText.includes(k)).slice(0, 6);
+  if (keywords.length < 3) keywords.push('증시', '경제', '투자');
+  return {
+    date: `${dateStr} (${dayNames[today.getDay()]})`,
+    content: news.slice(0, 5).map(n => n.title + (n.source ? ` (${n.source})` : '')),
+    keywords: [...new Set(keywords)].slice(0, 6),
+    live: false,
+  };
+}
+
+async function generateAIBriefing(news) {
+  if (!news || news.length === 0) return null;
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) { console.warn('[Collect] OPENAI_API_KEY 없음 → fallback'); return fallbackBriefing(news); }
+    const headlines = news.slice(0, 15).map((n, i) => `${i + 1}. ${n.title}${n.source ? ` (${n.source})` : ''}`).join('\n');
+
+    const today = new Date();
+    const dateStr = `${today.getFullYear()}년 ${today.getMonth() + 1}월 ${today.getDate()}일`;
+    const dayNames = ['일','월','화','수','목','금','토'];
+    const dateFormatted = `${dateStr} (${dayNames[today.getDay()]})`;
+
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-4.1-nano',
+        messages: [
+          {
+            role: 'system',
+            content: '한국 금융시장 뉴스를 요약하는 AI 브리핑 어시스턴트. 반드시 JSON으로만 응답해.',
+          },
+          {
+            role: 'user',
+            content: `오늘 주요 금융 뉴스 헤드라인:\n${headlines}\n\n위 뉴스를 분석해서 다음 JSON 형식으로 응답해줘:\n{"summary":["핵심 요약 1문장","핵심 요약 2문장","핵심 요약 3문장"], "keywords":["키워드1","키워드2","키워드3","키워드4","키워드5","키워드6"], "sentiment":"bullish 또는 bearish 또는 neutral"}\n\nsummary는 오늘 시장 동향을 3문장으로 요약. keywords는 주요 키워드 6개. sentiment는 전체 시장 분위기.`,
+          },
+        ],
+        max_tokens: 500,
+        temperature: 0.3,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenAI API 응답 오류: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    const rawContent = data.choices[0].message.content.trim();
+
+    // JSON 파싱 (코드블록 감싸진 경우 처리)
+    const jsonStr = rawContent.replace(/^```json?\s*/, '').replace(/\s*```$/, '');
+    const parsed = JSON.parse(jsonStr);
+
+    console.log(`[Collect] AI 브리핑 생성 성공 (sentiment: ${parsed.sentiment})`);
+
+    return {
+      date: dateFormatted,
+      content: parsed.summary || [],
+      keywords: (parsed.keywords || []).slice(0, 6),
+      sentiment: parsed.sentiment || 'neutral',
+      live: true,
+    };
+  } catch (e) {
+    console.warn('[Collect] AI 브리핑 실패, fallback:', e.message);
+    return fallbackBriefing(news);
+  }
+}
+
 // ===== Main =====
 async function main() {
   console.log(`[Collect] 시작: ${new Date().toISOString()}`);
@@ -950,17 +1029,8 @@ async function main() {
   const baseRates = baseRatesResult.status === 'fulfilled' ? baseRatesResult.value : null;
   const dxy = dxyResult.status === 'fulfilled' ? dxyResult.value : null;
 
-  // Phase 2: 뉴스 파생
-  const briefing = news ? (() => {
-    const today = new Date();
-    const dateStr = `${today.getFullYear()}년 ${today.getMonth() + 1}월 ${today.getDate()}일`;
-    const dayNames = ['일','월','화','수','목','금','토'];
-    const allText = news.map(n => n.title).join(' ');
-    const candidates = ['삼성전자','SK하이닉스','현대차','FOMC','금리','환율','코스피','코스닥','반도체','AI','배당','실적','인플레','ETF','2차전지','바이오','원달러','증시','무역','수출'];
-    const keywords = candidates.filter(k => allText.includes(k)).slice(0, 6);
-    if (keywords.length < 3) keywords.push('증시', '경제', '투자');
-    return { date: `${dateStr} (${dayNames[today.getDay()]})`, content: news.slice(0, 5).map(n => n.title + (n.source ? ` (${n.source})` : '')), keywords: [...new Set(keywords)].slice(0, 6), live: true };
-  })() : null;
+  // Phase 2: 뉴스 파생 (AI 브리핑)
+  const briefing = await generateAIBriefing(news);
   const trends = extractTrends(news);
 
   // Phase 3: 주식 + ETF
