@@ -583,30 +583,49 @@ async function collectNews(query) {
 }
 
 async function collectCalendar() {
-  const queries = ['한국 경제 일정 발표', 'FOMC 금통위 실적발표'];
+  const queries = [
+    '한국 경제 금리 환율 물가',
+    'FOMC 금통위 기준금리 통화정책',
+    '고용 실업률 CPI GDP 수출',
+    '코스피 코스닥 증시 주식시장',
+  ];
   const allEvents = [];
   for (const query of queries) {
     try {
-      const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=ko&gl=KR&ceid=KR:ko`;
+      const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}+when:3d&hl=ko&gl=KR&ceid=KR:ko`;
       const xml = await fetchText(rssUrl, 10000);
       const $ = cheerio.load(xml, { xmlMode: true });
-      $('item').slice(0, 5).each((_, item) => {
+      $('item').slice(0, 8).each((_, item) => {
         const title = ($(item).find('title').text() || '').replace(/\s*-\s*[^-]+$/, '').trim();
         const pubDate = $(item).find('pubDate').text();
         const source = $(item).find('source').text();
         if (title) {
           const d = new Date(pubDate);
-          const dateStr = isNaN(d.getTime()) ? '' : d.toISOString().split('T')[0];
+          const dateStr = isNaN(d.getTime()) ? '' : d.toISOString();
+
+          // 중요도 분류
           let importance = 'low';
-          if (/FOMC|금통위|금리|기준금리|실적/.test(title)) importance = 'high';
-          else if (/고용|물가|GDP|수출|무역|CPI|PMI/.test(title)) importance = 'medium';
-          allEvents.push({ date: dateStr, title: title.substring(0, 40), importance, source, live: true });
+          if (/FOMC|금통위|금리|기준금리|통화정책|한은|연준|BOK|Fed/.test(title)) importance = 'high';
+          else if (/CPI|고용|실업|GDP|수출|무역|물가|인플레|소비자물가|PMI|경상수지/.test(title)) importance = 'medium';
+
+          // 카테고리 분류
+          let category = '기타';
+          if (/금리|FOMC|금통위|통화정책|한은|연준|BOK|Fed|기준금리/.test(title)) category = '금리';
+          else if (/환율|원달러|달러|원화|외환|DXY|엔화|위안/.test(title)) category = '환율';
+          else if (/고용|실업|일자리|취업|노동/.test(title)) category = '고용';
+          else if (/물가|CPI|인플레|소비자물가|생산자물가|PPI/.test(title)) category = '물가';
+          else if (/코스피|코스닥|증시|주가|주식|상장|KOSPI|KOSDAQ|나스닥|S&P|다우/.test(title)) category = '증시';
+
+          allEvents.push({ date: dateStr, title: title.substring(0, 60), importance, category, source, live: true });
         }
       });
     } catch (e) { /* skip */ }
   }
+  // 중복 제거 + 최신순 정렬
   const seen = new Set();
-  return allEvents.filter(e => { const k = e.title.substring(0, 20); if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 8);
+  const unique = allEvents.filter(e => { const k = e.title.substring(0, 25); if (seen.has(k)) return false; seen.add(k); return true; });
+  unique.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  return unique.slice(0, 15);
 }
 
 async function collectYouTube() {
