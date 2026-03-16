@@ -18,7 +18,8 @@ const {
 
 // ===== 수집 설정 =====
 const FEAR_GREED_CACHE = path.join(__dirname, 'data', 'feargreed-cache.json');
-const FEAR_GREED_TTL = 24 * 60 * 60 * 1000; // 24시간 (하루 최대 1번 호출)
+const BASE_RATES_CACHE = path.join(__dirname, 'data', 'baserates-cache.json');
+const DAILY_CACHE_TTL = 24 * 60 * 60 * 1000; // 24시간 (하루 최대 1번 호출)
 
 const CONFIG = {
   NAVER_POSTS_PER_STOCK: 10,
@@ -613,7 +614,7 @@ async function getFearGreedCached() {
     if (fs.existsSync(FEAR_GREED_CACHE)) {
       const cached = JSON.parse(fs.readFileSync(FEAR_GREED_CACHE, 'utf-8'));
       const age = Date.now() - (cached._fetchedAt || 0);
-      if (age < FEAR_GREED_TTL) {
+      if (age < DAILY_CACHE_TTL) {
         console.log(`[Collect] Fear & Greed 캐시 사용 (${Math.round(age / 3600000)}시간 전 수집)`);
         const { _fetchedAt, ...data } = cached;
         return data;
@@ -649,14 +650,54 @@ async function getFearGreedCached() {
   return null;
 }
 
+// ===== 기준금리 캐시 수집 (24시간 TTL) =====
+async function getBaseRatesCached() {
+  try {
+    if (fs.existsSync(BASE_RATES_CACHE)) {
+      const cached = JSON.parse(fs.readFileSync(BASE_RATES_CACHE, 'utf-8'));
+      const age = Date.now() - (cached._fetchedAt || 0);
+      if (age < DAILY_CACHE_TTL) {
+        console.log(`[Collect] 기준금리 캐시 사용 (${Math.round(age / 3600000)}시간 전 수집)`);
+        const { _fetchedAt, ...data } = cached;
+        return data;
+      }
+    }
+  } catch (e) { /* 캐시 읽기 실패 → 새로 수집 */ }
+
+  try {
+    const data = await collectBaseRates();
+    if (data && (data.kr?.live || data.us?.live)) {
+      const dataDir = path.join(__dirname, 'data');
+      if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+      fs.writeFileSync(BASE_RATES_CACHE, JSON.stringify({ ...data, _fetchedAt: Date.now() }));
+      console.log(`[Collect] 기준금리 수집 성공 (한국: ${data.kr?.value}%, 미국: ${data.us?.value}%)`);
+      return data;
+    }
+  } catch (e) {
+    console.warn(`[Collect] 기준금리 수집 실패: ${e.message}`);
+  }
+
+  // 실패 시 만료 캐시 재사용
+  try {
+    if (fs.existsSync(BASE_RATES_CACHE)) {
+      const cached = JSON.parse(fs.readFileSync(BASE_RATES_CACHE, 'utf-8'));
+      const { _fetchedAt, ...data } = cached;
+      console.log('[Collect] 기준금리 만료 캐시 재사용');
+      return data;
+    }
+  } catch (e) { /* ignore */ }
+
+  return null;
+}
+
 // ===== Main =====
 async function main() {
   console.log(`[Collect] 시작: ${new Date().toISOString()}`);
   const startTime = Date.now();
 
   // Phase 1: 병렬 수집 (Fear & Greed는 12시간 캐시로 별도 관리)
-  const [fxResult, indicesResult, newsResult, calendarResult, youtubeResult, usdkrwResult, baseRatesResult, dxyResult] = await Promise.allSettled([
-    collectExchangeRates(), collectIndices(), collectNews(), collectCalendar(), collectYouTube(), collectUsdKrwChart(), collectBaseRates(), collectDXY(),
+  const [fxResult, indicesResult, newsResult, calendarResult, youtubeResult, usdkrwResult, dxyResult] = await Promise.allSettled([
+    collectExchangeRates(), collectIndices(), collectNews(), collectCalendar(), collectYouTube(), collectUsdKrwChart(), collectDXY(),
   ]);
 
   const exchangeRates = fxResult.status === 'fulfilled' ? fxResult.value : null;
@@ -665,9 +706,11 @@ async function main() {
   const calendar = calendarResult.status === 'fulfilled' ? calendarResult.value : null;
   const youtube = youtubeResult.status === 'fulfilled' ? youtubeResult.value : null;
   const usdKrwChart = usdkrwResult.status === 'fulfilled' ? usdkrwResult.value : null;
-  const baseRates = baseRatesResult.status === 'fulfilled' ? baseRatesResult.value : null;
   const dxy = dxyResult.status === 'fulfilled' ? dxyResult.value : null;
+
+  // 24시간 캐시 데이터 (하루 1회 수집)
   const fearGreed = await getFearGreedCached();
+  const baseRates = await getBaseRatesCached();
 
   // Phase 2: 뉴스 파생 (AI 브리핑)
   const briefing = await generateAIBriefing(news);
