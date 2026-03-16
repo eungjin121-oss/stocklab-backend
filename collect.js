@@ -7,7 +7,19 @@ const cheerio = require('cheerio');
 const fs = require('fs');
 const path = require('path');
 
+// 공유 모듈
+const { fetchJSON, fetchText, sleep, timeAgo, BROWSER_UA } = require('./lib/utils');
+const {
+  getYahooQuote, collectIndices, collectDXY, collectExchangeRates,
+  collectStocks, collectNews, collectCalendar, collectYouTube,
+  extractTrends, collectETFs, collectNaverDiscussion, collectUsdKrwChart,
+  collectFearGreed,
+} = require('./lib/collectors');
+
 // ===== 수집 설정 =====
+const FEAR_GREED_CACHE = path.join(__dirname, 'data', 'feargreed-cache.json');
+const FEAR_GREED_TTL = 24 * 60 * 60 * 1000; // 24시간 (하루 최대 1번 호출)
+
 const CONFIG = {
   NAVER_POSTS_PER_STOCK: 10,
   DC_POSTS_LIMIT: 20,
@@ -118,47 +130,26 @@ async function saveSentimentSnapshot(sentiments) {
   }
 }
 
-const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-
-// ===== Fetch Helpers =====
-async function fetchJSON(url, timeout = 15000) {
-  const ctrl = new AbortController();
-  const tid = setTimeout(() => ctrl.abort(), timeout);
+// Fear & Greed 히스토리를 Firestore에 누적 저장
+async function saveFearGreedHistory(fearGreed) {
+  if (!db || !fearGreed || fearGreed.score == null) return;
   try {
-    const res = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': BROWSER_UA } });
-    clearTimeout(tid);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } catch (e) { clearTimeout(tid); throw e; }
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const docId = `fg_${today}`;
+    await db.collection('feargreed_history').doc(docId).set({
+      date: today,
+      score: fearGreed.score,
+      rating: fearGreed.rating,
+      previousClose: fearGreed.previousClose,
+      timestamp: new Date().toISOString(),
+    }, { merge: true });
+    console.log(`[Firestore] feargreed_history: ${today} 저장 (score: ${fearGreed.score})`);
+  } catch (e) {
+    console.error('[Firestore] feargreed_history 저장 실패:', e.message);
+  }
 }
 
-async function fetchText(url, timeout = 15000) {
-  const ctrl = new AbortController();
-  const tid = setTimeout(() => ctrl.abort(), timeout);
-  try {
-    const res = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'ko-KR,ko;q=0.9' } });
-    clearTimeout(tid);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.text();
-  } catch (e) { clearTimeout(tid); throw e; }
-}
-
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-function timeAgo(date) {
-  if (isNaN(date.getTime())) return '';
-  const diff = Date.now() - date.getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return '방금 전';
-  if (mins < 60) return `${mins}분 전`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}시간 전`;
-  const days = Math.floor(hrs / 24);
-  if (days < 7) return `${days}일 전`;
-  return `${Math.floor(days / 7)}주 전`;
-}
-
-// generateNearHistory 삭제됨 - 실제 데이터만 사용
+// Fetch Helpers, collectors: lib/utils.js + lib/collectors.js에서 import
 
 // ===== FinBert AI 감성분석 =====
 async function analyzeWithFinBert(texts) {
@@ -213,16 +204,10 @@ async function analyzeWithFinBert(texts) {
 }
 
 // ===== 키워드 기반 감성 분석 (fallback + 하이브리드 보정용) =====
-// ⚠️ 프론트엔드 js/utils/sentiment.js와 동기화 필요
-// 키워드를 추가/삭제할 때 양쪽 파일을 함께 수정하세요.
+// 키워드 사전: shared/sentiment-keywords.json (프론트/백엔드 공유)
+const _sentimentKw = require('../shared/sentiment-keywords.json');
 const KoreanSentiment = {
-  // 커뮤니티 비속어/은어까지 포함한 확장 사전
-  strongPositive: ['급등','폭등','대박','상한가','역대최고','신고가','대호재','초강세','텐배거','완전체','개이득','떡상','미친상승','불장','역대급'],
-  positive: ['상승','매수','호재','돌파','반등','강세','기대','수익','실적개선','추천','좋은','긍정','성장','흑자','호실적','저평가','목표가','상향','모아가자','존버','매력적','오르','올라','갈거','간다','개꿀','굿','좋다','기회','바닥','매집','줍줍','저가매수','물타기','개좋','ㅋㅋ좋','가즈아','화이팅','축하','수익인증','익절','떡상','개꿀','레전드','찐이다','존맛','갓','핵이득'],
-  strongNegative: ['급락','폭락','하한가','깡통','반토막','대폭락','대참사','물린','쪽박','망','개폭락','떡락','존망','핵폭락','개망','미친하락','개잡주','쓰레기주','먹튀','사기','나락','지옥','개거품','대참사'],
-  negative: ['하락','매도','악재','손절','약세','우려','손실','실적악화','위험','나쁜','부정','적자','고평가','하향','빠진','떨어','떨어진','물려','빠질','내려','걱정','불안','위기','폭망','팔자','개미털기','못하','안좋','삼성망','ㅠ',
-    // 커뮤니티 비속어/은어 (strongNegative와 중복 제거)
-    '쓰레기','거지','ㅅㅂ','시발','ㅂㅅ','병신','ㄱㅅㄲ','개새','씹','좆','지랄','미친','개못','망했','망할','폭삭','폭망','꼴받','열받','어이없','한심','답없','후회','최악','거품','허수','조작','작전','세력놈','ㅠㅠ','ㅜㅜ','아놔','에휴','짜증','개별로','별로'],
+  ..._sentimentKw,
   analyze(text) {
     if (!text) return { score: 0, label: '중립' };
     let score = 0;
@@ -338,399 +323,8 @@ function aggregateSentiments(posts) {
   };
 }
 
-// ===== Collectors =====
-async function collectExchangeRates() {
-  try {
-    const data = await fetchJSON('https://open.er-api.com/v6/latest/USD');
-    if (data.result !== 'success') throw new Error('API error');
-    const krw = data.rates.KRW;
-
-    // 이전 수집 데이터에서 환율 히스토리 로드
-    let prevRates = {};
-    try {
-      const prevData = JSON.parse(fs.readFileSync(path.join(__dirname, 'data/latest.json'), 'utf-8'));
-      if (prevData.exchangeRates) {
-        for (const r of prevData.exchangeRates) {
-          prevRates[r.pair] = { value: r.value, history: r.history || [] };
-        }
-      }
-    } catch (_) {}
-
-    return [
-      { pair: 'USD/KRW', rate: krw, group: '주요' },
-      { pair: 'EUR/KRW', rate: krw / data.rates.EUR, group: '주요' },
-      { pair: 'JPY/KRW', rate: krw / data.rates.JPY, group: '아시아' },
-      { pair: 'CNY/KRW', rate: krw / data.rates.CNY, group: '아시아' },
-      { pair: 'GBP/KRW', rate: krw / data.rates.GBP, group: '주요' },
-      { pair: 'AUD/KRW', rate: krw / data.rates.AUD, group: '주요' },
-      { pair: 'SGD/KRW', rate: krw / data.rates.SGD, group: '아시아' },
-      { pair: 'THB/KRW', rate: krw / data.rates.THB, group: '아시아' },
-    ].map(p => {
-      const value = Math.round(p.rate * 100) / 100;
-      const prev = prevRates[p.pair];
-      const prevValue = prev?.value || value;
-      const change = Math.round((value - prevValue) * 100) / 100;
-      // 히스토리: 이전 히스토리에 현재값 추가 (최대 8개)
-      let history = prev?.history ? [...prev.history] : [];
-      if (history.length === 0 || history[history.length - 1] !== value) {
-        history.push(value);
-      }
-      if (history.length > 8) history = history.slice(-8);
-      return { pair: p.pair, value, change, history, live: true, group: p.group };
-    });
-  } catch (e) { console.warn('[Collect] 환율 실패:', e.message); return null; }
-}
-
-async function collectDXY() {
-  try {
-    const quote = await getYahooQuote('DX=F');
-    if (!quote) return null;
-    return { ...quote, name: 'US Dollar Index', symbol: 'DX=F' };
-  } catch (e) { console.warn('[Collect] DXY 실패:', e.message); return null; }
-}
-
-async function getYahooQuote(symbol) {
-  try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=3mo&includePrePost=false`;
-    const data = await fetchJSON(url, 15000);
-    if (!data.chart || !data.chart.result) throw new Error('No data');
-    const result = data.chart.result[0];
-    const meta = result.meta;
-    const closes = (result.indicators.quote[0].close || []).filter(v => v != null);
-    if (closes.length === 0) throw new Error('No price data');
-    const price = meta.regularMarketPrice;
-    // 일일 변동: closes 배열의 마지막-1 값 (어제 종가) 사용
-    // chartPreviousClose는 range 시작 시점 (3mo)이므로 일일 변동에 부적합
-    const dailyPrevClose = closes.length >= 2 ? closes[closes.length - 2] : price;
-    const prevClose3mo = meta.chartPreviousClose || closes[0] || price;
-    return {
-      price: Math.round(price), prevClose: Math.round(dailyPrevClose),
-      change: Math.round(price - dailyPrevClose),
-      changePercent: Math.round((price - dailyPrevClose) / dailyPrevClose * 10000) / 100,
-      change3mo: Math.round(price - prevClose3mo),
-      changePercent3mo: Math.round((price - prevClose3mo) / prevClose3mo * 10000) / 100,
-      history: closes.slice(-8).map(v => Math.round(v)),
-      fullCloses: closes.map(v => Math.round(v)),
-      timestamps: result.timestamp, live: true,
-    };
-  } catch (e) { console.warn(`[Collect] Yahoo ${symbol} 실패:`, e.message); return null; }
-}
-
-async function collectIndices() {
-  const [kospi, kosdaq] = await Promise.allSettled([getYahooQuote('^KS11'), getYahooQuote('^KQ11')]);
-  return {
-    kospi: kospi.status === 'fulfilled' ? kospi.value : null,
-    kosdaq: kosdaq.status === 'fulfilled' ? kosdaq.value : null,
-  };
-}
-
-const MAIN_STOCKS = [
-  { code: '005930', name: '삼성전자', sector: '반도체' },
-  { code: '000660', name: 'SK하이닉스', sector: '반도체' },
-  { code: '005380', name: '현대차', sector: '자동차' },
-  { code: '005490', name: 'POSCO홀딩스', sector: '철강' },
-  { code: '105560', name: 'KB금융', sector: '금융' },
-  { code: '055550', name: '신한지주', sector: '금융' },
-  { code: '035420', name: 'NAVER', sector: 'IT' },
-  { code: '035720', name: '카카오', sector: 'IT' },
-  { code: '006400', name: '삼성SDI', sector: '2차전지' },
-  { code: '051910', name: 'LG화학', sector: '2차전지' },
-  { code: '068270', name: '셀트리온', sector: '바이오' },
-  { code: '207940', name: '삼성바이오로직스', sector: '바이오' },
-];
-
-// ===== 네이버 금융 재무지표 스크래핑 (PER, PBR, 배당률, 시총) =====
-async function scrapeNaverFinancials(code) {
-  try {
-    const html = await fetchText(`https://finance.naver.com/item/main.naver?code=${code}`, CONFIG.FETCH_TIMEOUT);
-    const $ = cheerio.load(html);
-    const result = {};
-
-    // 시가총액: #_market_sum 또는 #_totalMarketValue
-    const marketCapEl = $('#_market_sum, #_totalMarketValue');
-    if (marketCapEl.length) {
-      const raw = marketCapEl.text().replace(/[\s,원조억]/g, '').trim();
-      // 네이버는 "억 원" 단위 표시 — 전체 텍스트에서 파싱
-      const fullText = marketCapEl.closest('td, em').text().replace(/\s+/g, ' ').trim();
-      // 시총을 억 단위로 가져오기
-      const numMatch = marketCapEl.text().replace(/[^\d,]/g, '').replace(/,/g, '');
-      if (numMatch) {
-        const num = parseInt(numMatch);
-        if (num >= 10000) {
-          const jo = num / 10000;
-          result.marketCap = jo >= 10 ? Math.round(jo) + '조' : jo.toFixed(1).replace(/\.0$/, '') + '조';
-        } else result.marketCap = num.toLocaleString() + '억';
-      }
-    }
-
-    // PER, PBR, 배당률: 종목 요약 테이블에서 가져오기
-    const tables = $('table');
-    tables.each((_, table) => {
-      $(table).find('tr').each((_, tr) => {
-        const text = $(tr).text().replace(/\s+/g, ' ');
-        // PER
-        if (text.includes('PER') && !result.per) {
-          const m = text.match(/PER\s*[\(（].*?[\)）]?\s*([\d,.]+)/);
-          if (m) result.per = parseFloat(m[1].replace(/,/g, ''));
-        }
-        // PBR
-        if (text.includes('PBR') && !result.pbr) {
-          const m = text.match(/PBR\s*([\d,.]+)/);
-          if (m) result.pbr = parseFloat(m[1].replace(/,/g, ''));
-        }
-        // 배당수익률
-        if (text.includes('배당수익률') && !result.divYield) {
-          const m = text.match(/배당수익률\s*([\d,.]+)/);
-          if (m) result.divYield = parseFloat(m[1].replace(/,/g, ''));
-        }
-      });
-    });
-
-    // 대안: em 태그에서 직접 추출
-    if (!result.per || !result.pbr) {
-      $('em').each((_, el) => {
-        const id = $(el).attr('id') || '';
-        const val = $(el).text().replace(/,/g, '').trim();
-        if (id === '_per' && !result.per) result.per = parseFloat(val) || null;
-        if (id === '_pbr' && !result.pbr) result.pbr = parseFloat(val) || null;
-        if (id === '_dvr' && !result.divYield) result.divYield = parseFloat(val) || null;
-      });
-    }
-
-    // 시총 대안: "시가총액" 행 텍스트에서 추출
-    if (!result.marketCap) {
-      $('td, th').each((_, el) => {
-        const text = $(el).text();
-        if (text.includes('시가총액')) {
-          const next = $(el).next('td, em');
-          if (next.length) {
-            const raw = next.text().replace(/[^\d]/g, '');
-            if (raw) {
-              const num = parseInt(raw);
-              if (num > 10000) result.marketCap = Math.round(num / 10000) + '조';
-              else if (num > 0) result.marketCap = num.toLocaleString() + '억';
-            }
-          }
-        }
-      });
-    }
-
-    const hasData = result.per || result.pbr || result.divYield || result.marketCap;
-    return hasData ? result : null;
-  } catch (e) {
-    console.warn(`[Collect] 네이버 재무 ${code} 실패:`, e.message);
-    return null;
-  }
-}
-
-async function collectStocks() {
-  const results = [];
-  for (let i = 0; i < MAIN_STOCKS.length; i += 3) {
-    const batch = MAIN_STOCKS.slice(i, i + 3);
-    const batchResults = await Promise.allSettled(batch.map(s => getYahooQuote(s.code + '.KS')));
-    for (let j = 0; j < batch.length; j++) {
-      const def = batch[j];
-      const quote = batchResults[j].status === 'fulfilled' ? batchResults[j].value : null;
-      if (quote) {
-        results.push({ code: def.code, name: def.name, sector: def.sector, market: 'KOSPI', price: quote.price, change: quote.change, changePercent: quote.changePercent, history: quote.history, fullCloses: quote.fullCloses, timestamps: quote.timestamps, live: true });
-      }
-    }
-    if (i + 3 < MAIN_STOCKS.length) await sleep(1000);
-  }
-
-  // 네이버 금융에서 재무지표 수집 (PER/PBR/배당률/시총)
-  if (results.length > 0) {
-    console.log('[Collect] 네이버 금융 재무지표 수집 시작...');
-    for (let i = 0; i < results.length; i += 3) {
-      const batch = results.slice(i, i + 3);
-      const fundResults = await Promise.allSettled(batch.map(s => scrapeNaverFinancials(s.code)));
-      for (let j = 0; j < batch.length; j++) {
-        const fund = fundResults[j].status === 'fulfilled' ? fundResults[j].value : null;
-        if (fund) {
-          if (fund.per != null && !isNaN(fund.per)) batch[j].per = fund.per;
-          if (fund.pbr != null && !isNaN(fund.pbr)) batch[j].pbr = fund.pbr;
-          if (fund.divYield != null && !isNaN(fund.divYield)) batch[j].divYield = fund.divYield;
-          else if (fund.divYield == null) batch[j].divYield = 0;
-          if (fund.marketCap) batch[j].marketCap = fund.marketCap;
-        }
-      }
-      if (i + 3 < results.length) await sleep(500);
-    }
-    const withFund = results.filter(s => s.per || s.pbr || s.divYield || s.marketCap).length;
-    console.log(`[Collect] 네이버 재무지표: ${withFund}/${results.length}개 종목 수집 완료`);
-  }
-
-  return results.length > 0 ? results : null;
-}
-
-async function collectNews(query) {
-  query = query || '한국 증시 주식 경제';
-  try {
-    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}+when:3d&hl=ko&gl=KR&ceid=KR:ko`;
-    const xml = await fetchText(rssUrl, 10000);
-    const $ = cheerio.load(xml, { xmlMode: true });
-    const articles = [];
-    $('item').slice(0, 10).each((_, item) => {
-      const rawTitle = $(item).find('title').text();
-      const source = $(item).find('source').text();
-      const pubDate = $(item).find('pubDate').text();
-      const title = rawTitle.replace(/\s*-\s*[^-]+$/, '').trim() || rawTitle;
-      const pd = new Date(pubDate);
-      articles.push({ title, source: source || '뉴스', time: timeAgo(pd), pubDate: isNaN(pd.getTime()) ? '' : pd.toISOString(), live: true });
-    });
-    return articles.length > 0 ? articles : null;
-  } catch (e) { console.warn('[Collect] 뉴스 실패:', e.message); return null; }
-}
-
-async function collectCalendar() {
-  const queries = [
-    '한국 경제 금리 환율 물가',
-    'FOMC 금통위 기준금리 통화정책',
-    '고용 실업률 CPI GDP 수출',
-    '코스피 코스닥 증시 주식시장',
-  ];
-  const allEvents = [];
-  for (const query of queries) {
-    try {
-      const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}+when:3d&hl=ko&gl=KR&ceid=KR:ko`;
-      const xml = await fetchText(rssUrl, 10000);
-      const $ = cheerio.load(xml, { xmlMode: true });
-      $('item').slice(0, 8).each((_, item) => {
-        const title = ($(item).find('title').text() || '').replace(/\s*-\s*[^-]+$/, '').trim();
-        const pubDate = $(item).find('pubDate').text();
-        const source = $(item).find('source').text();
-        if (title) {
-          const d = new Date(pubDate);
-          const dateStr = isNaN(d.getTime()) ? '' : d.toISOString();
-
-          // 중요도 분류
-          let importance = 'low';
-          if (/FOMC|금통위|금리|기준금리|통화정책|한은|연준|BOK|Fed/.test(title)) importance = 'high';
-          else if (/CPI|고용|실업|GDP|수출|무역|물가|인플레|소비자물가|PMI|경상수지/.test(title)) importance = 'medium';
-
-          // 카테고리 분류
-          let category = '기타';
-          if (/금리|FOMC|금통위|통화정책|한은|연준|BOK|Fed|기준금리/.test(title)) category = '금리';
-          else if (/환율|원달러|달러|원화|외환|DXY|엔화|위안/.test(title)) category = '환율';
-          else if (/고용|실업|일자리|취업|노동/.test(title)) category = '고용';
-          else if (/물가|CPI|인플레|소비자물가|생산자물가|PPI/.test(title)) category = '물가';
-          else if (/코스피|코스닥|증시|주가|주식|상장|KOSPI|KOSDAQ|나스닥|S&P|다우/.test(title)) category = '증시';
-
-          allEvents.push({ date: dateStr, title: title.substring(0, 60), importance, category, source, live: true });
-        }
-      });
-    } catch (e) { /* skip */ }
-  }
-  // 중복 제거 + 최신순 정렬
-  const seen = new Set();
-  const unique = allEvents.filter(e => { const k = e.title.substring(0, 25); if (seen.has(k)) return false; seen.add(k); return true; });
-  unique.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-  return unique.slice(0, 15);
-}
-
-async function collectYouTube() {
-  // 투자 관련 최신 기사를 유튜브 콘텐츠 섹션에 표시
-  // Google News RSS when:7d로 최근 7일 내 기사만 수집
-  const queries = ['주식 투자 전망', '증시 분석 전문가'];
-  const allItems = [];
-  for (const query of queries) {
-    try {
-      const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}+when:7d&hl=ko&gl=KR&ceid=KR:ko`;
-      const xml = await fetchText(rssUrl, 10000);
-      const $ = cheerio.load(xml, { xmlMode: true });
-      $('item').slice(0, 5).each((_, item) => {
-        const rawTitle = $(item).find('title').text();
-        const source = $(item).find('source').text();
-        const pubDate = $(item).find('pubDate').text();
-        const pd = new Date(pubDate);
-        allItems.push({ title: rawTitle.replace(/\s*-\s*[^-]+$/, '').trim() || rawTitle, channel: source || '투자 채널', time: timeAgo(pd), pubDate: isNaN(pd.getTime()) ? '' : pd.toISOString(), live: true });
-      });
-    } catch (e) { /* skip */ }
-  }
-  const seen = new Set();
-  return allItems.filter(i => { const k = i.title.substring(0, 25); if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 8);
-}
-
-function extractTrends(news) {
-  if (!news || news.length === 0) return null;
-  const allText = news.map(n => n.title).join(' ');
-  const candidates = ['삼성전자','SK하이닉스','현대차','FOMC','금리','환율','코스피','코스닥','반도체','AI','배당','실적','인플레','ETF','2차전지','바이오','원달러','KB금융','NAVER','카카오','LG','POSCO','셀트리온','한은','연준','물가','고용','GDP','수출','무역','증시','투자','테슬라','엔비디아','트럼프','관세','원유','금값','비트코인','부동산','IPO','공모주'];
-  const keywords = [];
-  candidates.forEach(word => {
-    const matches = allText.match(new RegExp(word, 'g'));
-    if (matches) keywords.push({ word, count: matches.length });
-  });
-  keywords.sort((a, b) => b.count - a.count);
-  return keywords.slice(0, 16).map((k, i) => ({ word: k.word, count: k.count, size: i < 2 ? 5 : i < 5 ? 4 : i < 8 ? 3 : i < 12 ? 2 : 1, live: true }));
-}
-
-const ETF_DEFS = [
-  { name: 'TIGER S&P500', code: '360750' },
-  { name: 'KODEX 200', code: '069500' },
-  { name: 'ACE 미국배당다우존스', code: '402460' },
-  { name: 'TIGER 미국나스닥100', code: '133690' },
-  { name: 'KODEX 배당가치', code: '290130' },
-];
-
-async function collectETFs() {
-  const results = [];
-  for (let i = 0; i < ETF_DEFS.length; i += 3) {
-    const batch = ETF_DEFS.slice(i, i + 3);
-    const batchResults = await Promise.allSettled(batch.map(e => getYahooQuote(e.code + '.KS')));
-    for (let j = 0; j < batch.length; j++) {
-      const def = batch[j];
-      const quote = batchResults[j].status === 'fulfilled' ? batchResults[j].value : null;
-      if (quote) {
-        const closes = quote.fullCloses || [];
-        const cur = closes[closes.length - 1] || quote.price;
-        const m1y = closes.length > 250 ? closes[closes.length - 251] : closes[0];
-        const return1y = m1y ? Math.round((cur - m1y) / m1y * 1000) / 10 : 0;
-        results.push({ name: def.name, code: def.code, price: quote.price, change: quote.change, changePercent: quote.changePercent, return1y, history: quote.history, fullCloses: quote.fullCloses, timestamps: quote.timestamps, live: true });
-      }
-    }
-    if (i + 3 < ETF_DEFS.length) await sleep(1000);
-  }
-  return results.length > 0 ? results : null;
-}
-
-async function collectUsdKrwChart() {
-  try {
-    const data = await fetchJSON('https://query1.finance.yahoo.com/v8/finance/chart/KRW=X?interval=1d&range=3mo', CONFIG.FETCH_TIMEOUT);
-    const result = data.chart.result[0];
-    const rawCloses = result.indicators.quote[0].close || [];
-    const rawTimestamps = result.timestamp || [];
-    // null 값을 제거하면서 labels/values 동기화
-    const labels = [], values = [];
-    for (let i = 0; i < rawCloses.length && i < rawTimestamps.length; i++) {
-      if (rawCloses[i] != null) {
-        const d = new Date(rawTimestamps[i] * 1000);
-        labels.push(`${d.getMonth() + 1}/${d.getDate()}`);
-        values.push(Math.round(rawCloses[i] * 100) / 100);
-      }
-    }
-    return { labels, values, live: true };
-  } catch (e) { console.warn('[Collect] USD/KRW 차트 실패:', e.message); return null; }
-}
-
-async function collectNaverDiscussion(stockCode) {
-  try {
-    const html = await fetchText(`https://finance.naver.com/item/board.naver?code=${stockCode}`, CONFIG.FETCH_TIMEOUT);
-    const $ = cheerio.load(html);
-    const posts = [];
-    $('table.type2 tr').each((_, row) => {
-      const cells = $(row).find('td');
-      if (cells.length < 6) return;
-      const titleEl = $(cells[1]).find('a');
-      if (!titleEl.length) return;
-      const title = (titleEl.attr('title') || titleEl.text() || '').trim();
-      if (!title) return;
-      const href = titleEl.attr('href') || '';
-      const url = href ? `https://finance.naver.com${href}` : '';
-      posts.push({ title, url, author: $(cells[2]).text().trim(), date: $(cells[0]).text().trim(), views: parseInt($(cells[3]).text().trim()) || 0, likes: parseInt($(cells[4]).text().trim()) || 0, dislikes: parseInt($(cells[5]).text().trim()) || 0, source: '네이버증권', live: true });
-    });
-    return posts.length > 0 ? posts : null;
-  } catch (e) { console.warn(`[Collect] 네이버 토론방 ${stockCode} 실패:`, e.message); return null; }
-}
+// ===== collect.js 전용 수집기 (DC Inside, 커뮤니티, 기준금리, AI briefing) =====
+// 공유 수집기(환율, Yahoo, 뉴스 등)는 lib/collectors.js에서 import
 
 async function collectDCInsideGallery() {
   try {
@@ -931,6 +525,8 @@ async function collectBaseRates() {
   }
 }
 
+// collectFearGreed → lib/collectors.js에서 import
+
 // ===== AI Briefing =====
 function fallbackBriefing(news) {
   if (!news || news.length === 0) return null;
@@ -1010,12 +606,55 @@ async function generateAIBriefing(news) {
   }
 }
 
+// ===== Fear & Greed 캐시 수집 (12시간 TTL) =====
+async function getFearGreedCached() {
+  // 캐시 파일이 있고 12시간 이내면 재사용
+  try {
+    if (fs.existsSync(FEAR_GREED_CACHE)) {
+      const cached = JSON.parse(fs.readFileSync(FEAR_GREED_CACHE, 'utf-8'));
+      const age = Date.now() - (cached._fetchedAt || 0);
+      if (age < FEAR_GREED_TTL) {
+        console.log(`[Collect] Fear & Greed 캐시 사용 (${Math.round(age / 3600000)}시간 전 수집)`);
+        const { _fetchedAt, ...data } = cached;
+        return data;
+      }
+    }
+  } catch (e) { /* 캐시 읽기 실패 → 새로 수집 */ }
+
+  // CNN API 호출
+  try {
+    const data = await collectFearGreed();
+    if (data) {
+      // 캐시 저장
+      const dataDir = path.join(__dirname, 'data');
+      if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+      fs.writeFileSync(FEAR_GREED_CACHE, JSON.stringify({ ...data, _fetchedAt: Date.now() }));
+      console.log(`[Collect] Fear & Greed 수집 성공 (score: ${data.score})`);
+      return data;
+    }
+  } catch (e) {
+    console.warn(`[Collect] Fear & Greed 수집 실패: ${e.message}`);
+  }
+
+  // 수집 실패 시 만료된 캐시라도 사용 (live: false로 변경)
+  try {
+    if (fs.existsSync(FEAR_GREED_CACHE)) {
+      const cached = JSON.parse(fs.readFileSync(FEAR_GREED_CACHE, 'utf-8'));
+      const { _fetchedAt, ...data } = cached;
+      console.log('[Collect] Fear & Greed 만료 캐시 재사용 (DEMO)');
+      return { ...data, live: false };
+    }
+  } catch (e) { /* ignore */ }
+
+  return null;
+}
+
 // ===== Main =====
 async function main() {
   console.log(`[Collect] 시작: ${new Date().toISOString()}`);
   const startTime = Date.now();
 
-  // Phase 1: 병렬 수집
+  // Phase 1: 병렬 수집 (Fear & Greed는 12시간 캐시로 별도 관리)
   const [fxResult, indicesResult, newsResult, calendarResult, youtubeResult, usdkrwResult, baseRatesResult, dxyResult] = await Promise.allSettled([
     collectExchangeRates(), collectIndices(), collectNews(), collectCalendar(), collectYouTube(), collectUsdKrwChart(), collectBaseRates(), collectDXY(),
   ]);
@@ -1028,13 +667,14 @@ async function main() {
   const usdKrwChart = usdkrwResult.status === 'fulfilled' ? usdkrwResult.value : null;
   const baseRates = baseRatesResult.status === 'fulfilled' ? baseRatesResult.value : null;
   const dxy = dxyResult.status === 'fulfilled' ? dxyResult.value : null;
+  const fearGreed = await getFearGreedCached();
 
   // Phase 2: 뉴스 파생 (AI 브리핑)
   const briefing = await generateAIBriefing(news);
   const trends = extractTrends(news);
 
   // Phase 3: 주식 + ETF
-  const stocks = await collectStocks();
+  const stocks = await collectStocks({ withFinancials: true, fetchTimeout: CONFIG.FETCH_TIMEOUT });
   await sleep(2000);
   const etfs = await collectETFs();
 
@@ -1085,7 +725,7 @@ async function main() {
   const data = {
     indices, exchangeRates, news, briefing, stocks, etfs, trends, calendar, youtube, sentiments,
     communityPosts: communityPosts.slice(0, CONFIG.COMMUNITY_CDN_POSTS), // CDN fallback용 최근 게시글
-    newsSentiment, usdKrwChart, baseRates, dxy,
+    newsSentiment, usdKrwChart, baseRates, dxy, fearGreed,
     updatedAt: new Date().toISOString(),
   };
 
@@ -1102,6 +742,9 @@ async function main() {
 
   // sentiment_history 컬렉션에 감성분석 시계열 스냅샷 저장
   await saveSentimentSnapshot(sentiments);
+
+  // feargreed_history 컬렉션에 공탐지수 누적 저장
+  await saveFearGreedHistory(fearGreed);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`[Collect] 완료 (${elapsed}s) - 환율:${!!exchangeRates} 지수:${!!indices} 뉴스:${news?.length || 0} 주식:${stocks?.length || 0} ETF:${etfs?.length || 0} 감성:${sentiments?.length || 0}`);
