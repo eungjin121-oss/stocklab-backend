@@ -19,7 +19,9 @@ const {
 // ===== 수집 설정 =====
 const FEAR_GREED_CACHE = path.join(__dirname, 'data', 'feargreed-cache.json');
 const BASE_RATES_CACHE = path.join(__dirname, 'data', 'baserates-cache.json');
+const BRIEFING_CACHE = path.join(__dirname, 'data', 'briefing-cache.json');
 const DAILY_CACHE_TTL = 24 * 60 * 60 * 1000; // 24시간 (하루 최대 1번 호출)
+const BRIEFING_CACHE_TTL = 12 * 60 * 60 * 1000; // 12시간 (하루 최대 2번 호출)
 
 const CONFIG = {
   NAVER_POSTS_PER_STOCK: 10,
@@ -607,6 +609,48 @@ async function generateAIBriefing(news) {
   }
 }
 
+// ===== AI 브리핑 캐시 수집 (12시간 TTL) =====
+async function getBriefingCached(news) {
+  try {
+    if (fs.existsSync(BRIEFING_CACHE)) {
+      const cached = JSON.parse(fs.readFileSync(BRIEFING_CACHE, 'utf-8'));
+      const age = Date.now() - (cached._fetchedAt || 0);
+      if (age < BRIEFING_CACHE_TTL) {
+        console.log(`[Collect] AI 브리핑 캐시 사용 (${Math.round(age / 3600000)}시간 전 생성)`);
+        const { _fetchedAt, ...data } = cached;
+        return { ...data, _collectedAt: new Date(_fetchedAt).toISOString() };
+      }
+    }
+  } catch (e) { /* 캐시 읽기 실패 → 새로 생성 */ }
+
+  try {
+    const data = await generateAIBriefing(news);
+    if (data && data.live) {
+      const now = Date.now();
+      const dataDir = path.join(__dirname, 'data');
+      if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+      fs.writeFileSync(BRIEFING_CACHE, JSON.stringify({ ...data, _fetchedAt: now }));
+      console.log('[Collect] AI 브리핑 생성 및 캐시 저장');
+      return { ...data, _collectedAt: new Date(now).toISOString() };
+    }
+    return data; // fallback (non-live)
+  } catch (e) {
+    console.warn('[Collect] AI 브리핑 생성 실패:', e.message);
+  }
+
+  // 만료 캐시 재사용
+  try {
+    if (fs.existsSync(BRIEFING_CACHE)) {
+      const cached = JSON.parse(fs.readFileSync(BRIEFING_CACHE, 'utf-8'));
+      const { _fetchedAt, ...data } = cached;
+      console.log('[Collect] AI 브리핑 만료 캐시 재사용');
+      return { ...data, _collectedAt: new Date(_fetchedAt).toISOString() };
+    }
+  } catch (e) { /* ignore */ }
+
+  return fallbackBriefing(news);
+}
+
 // ===== Fear & Greed 캐시 수집 (12시간 TTL) =====
 async function getFearGreedCached() {
   try {
@@ -709,8 +753,8 @@ async function main() {
   const fearGreed = await getFearGreedCached();
   const baseRates = await getBaseRatesCached();
 
-  // Phase 2: 뉴스 파생 (AI 브리핑)
-  const briefing = await generateAIBriefing(news);
+  // Phase 2: 뉴스 파생 (AI 브리핑 — 12시간 캐시)
+  const briefing = await getBriefingCached(news);
   const trends = extractTrends(news);
 
   // Phase 3: 주식 + ETF
