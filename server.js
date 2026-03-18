@@ -17,7 +17,7 @@ const {
 const log = require('./lib/logger');
 
 // 감성 분석 (shared/sentiment-keywords.json 사용)
-const _sentimentKw = require('../shared/sentiment-keywords.json');
+const _sentimentKw = require('./shared/sentiment-keywords.json');
 const KoreanSentiment = {
   ..._sentimentKw,
   analyze(text) {
@@ -256,6 +256,95 @@ app.get('/api/community/:code', async (req, res) => {
     const posts = await collectNaverDiscussion(req.params.code);
     res.json({ data: posts });
   } catch (e) { res.json({ data: null, error: e.message }); }
+});
+
+// ===== AI 프록시 엔드포인트 =====
+const AI_RATE_LIMITS = {
+  stock_report: 3,
+  news_summary: 10,
+  trade_pattern: 1,
+  portfolio: 3,
+};
+const aiUsage = {}; // { 'IP_feature_YYYY-MM-DD': count }
+
+function checkAILimit(ip, feature) {
+  const limit = AI_RATE_LIMITS[feature];
+  if (!limit) return { ok: true };
+  const key = `${ip}_${feature}_${new Date().toISOString().slice(0, 10)}`;
+  const used = aiUsage[key] || 0;
+  if (used >= limit) return { ok: false, used, max: limit };
+  return { ok: true, used, max: limit };
+}
+
+function incrementAIUsage(ip, feature) {
+  const key = `${ip}_${feature}_${new Date().toISOString().slice(0, 10)}`;
+  aiUsage[key] = (aiUsage[key] || 0) + 1;
+}
+
+// 오래된 사용량 기록 정리 (자정마다)
+setInterval(() => {
+  const today = new Date().toISOString().slice(0, 10);
+  for (const key of Object.keys(aiUsage)) {
+    if (!key.endsWith(today)) delete aiUsage[key];
+  }
+}, 60 * 60 * 1000);
+
+app.post('/api/ai/chat', async (req, res) => {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return res.status(503).json({ error: 'AI 서비스가 설정되지 않았습니다.' });
+  }
+
+  const { system, prompt, maxTokens, temperature, feature } = req.body;
+  if (!system || !prompt) {
+    return res.status(400).json({ error: 'system과 prompt는 필수입니다.' });
+  }
+
+  // Rate limit 체크
+  const ip = req.headers['x-forwarded-for'] || req.ip || 'unknown';
+  if (feature) {
+    const limit = checkAILimit(ip, feature);
+    if (!limit.ok) {
+      return res.status(429).json({ error: `일일 한도 초과 (${limit.used}/${limit.max})`, used: limit.used, max: limit.max });
+    }
+  }
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-4.1-nano',
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: prompt },
+        ],
+        max_tokens: Math.min(maxTokens || 1500, 3000),
+        temperature: temperature ?? 0.4,
+      }),
+    });
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      log.error('AI', `OpenAI 오류 (${response.status}):`, errData.error?.message || 'unknown');
+      return res.status(response.status).json({ error: errData.error?.message || `OpenAI 오류 (${response.status})` });
+    }
+
+    const data = await response.json();
+    if (feature) incrementAIUsage(ip, feature);
+    log.info('AI', `${feature || 'chat'} 완료 (${data.usage?.total_tokens || 0} tokens)`);
+
+    res.json({
+      content: data.choices[0].message.content,
+      tokens: data.usage?.total_tokens || 0,
+    });
+  } catch (e) {
+    log.error('AI', '프록시 오류:', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // 수동 수집 트리거

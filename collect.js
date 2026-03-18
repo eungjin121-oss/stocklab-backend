@@ -206,7 +206,7 @@ async function analyzeWithFinBert(texts) {
 
 // ===== 키워드 기반 감성 분석 (fallback + 하이브리드 보정용) =====
 // 키워드 사전: shared/sentiment-keywords.json (프론트/백엔드 공유)
-const _sentimentKw = require('../shared/sentiment-keywords.json');
+const _sentimentKw = require('./shared/sentiment-keywords.json');
 const KoreanSentiment = {
   ..._sentimentKw,
   analyze(text) {
@@ -804,13 +804,7 @@ async function main() {
   // feargreed_history 컬렉션에 공탐지수 누적 저장
   await saveFearGreedHistory(fearGreed);
 
-  // API 키를 Firestore에 저장 (프론트엔드 AI 분석용)
-  try {
-    const openaiKey = process.env.OPENAI_API_KEY;
-    if (openaiKey && db) {
-      await db.doc('config/api_keys').set({ openai: openaiKey }, { merge: true });
-    }
-  } catch (e) { console.warn('[Collect] API 키 Firestore 저장 실패:', e.message); }
+  // API 키는 백엔드 프록시에서만 사용 (Firestore 저장 중단)
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`[Collect] 완료 (${elapsed}s) - 환율:${!!exchangeRates} 지수:${!!indices} 뉴스:${news?.length || 0} 주식:${stocks?.length || 0} ETF:${etfs?.length || 0} 감성:${sentiments?.length || 0}`);

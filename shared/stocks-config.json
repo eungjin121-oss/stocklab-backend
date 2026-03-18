@@ -1,0 +1,14 @@
+[
+  { "code": "005930", "name": "삼성전자", "sector": "반도체", "market": "KOSPI" },
+  { "code": "000660", "name": "SK하이닉스", "sector": "반도체", "market": "KOSPI" },
+  { "code": "005380", "name": "현대차", "sector": "자동차", "market": "KOSPI" },
+  { "code": "005490", "name": "POSCO홀딩스", "sector": "철강", "market": "KOSPI" },
+  { "code": "105560", "name": "KB금융", "sector": "금융", "market": "KOSPI" },
+  { "code": "055550", "name": "신한지주", "sector": "금융", "market": "KOSPI" },
+  { "code": "035420", "name": "NAVER", "sector": "IT", "market": "KOSPI" },
+  { "code": "035720", "name": "카카오", "sector": "IT", "market": "KOSPI" },
+  { "code": "006400", "name": "삼성SDI", "sector": "2차전지", "market": "KOSPI" },
+  { "code": "051910", "name": "LG화학", "sector": "2차전지", "market": "KOSPI" },
+  { "code": "068270", "name": "셀트리온", "sector": "바이오", "market": "KOSPI" },
+  { "code": "207940", "name": "삼성바이오로직스", "sector": "바이오", "market": "KOSPI" }
+]
