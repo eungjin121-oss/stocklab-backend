@@ -483,10 +483,8 @@ function collectSentiments(allPosts, stockPostMap, targets, finbertResults) {
 }
 
 async function collectBaseRates() {
-  const fallback = {
-    kr: { label: '기준금리 (한국)', value: 2.75, unit: '%', change: -0.25, changeUnit: '%p', history: [3.5,3.5,3.5,3.25,3.25,3.0,3.0,2.75], live: false },
-    us: { label: '기준금리 (미국)', value: 3.625, unit: '%', change: 0, changeUnit: '%p', history: [5.5,5.25,5.0,4.75,4.5,4.25,3.625,3.625], live: false },
-  };
+  // 하드코딩 fallback 없음 — API 실패 시 해당 항목은 null
+  const result = { kr: null, us: null };
   try {
     // 한국은행 ECOS API (sample 키, 무료)
     const now = new Date();
@@ -502,28 +500,30 @@ async function collectBaseRates() {
       const krHistory = values.slice(-8);
       while (krHistory.length < 8) krHistory.unshift(krHistory[0]);
       const krPrev = krHistory.length >= 2 ? krHistory[krHistory.length - 2] : krRate;
-      fallback.kr = { label: '기준금리 (한국)', value: krRate, unit: '%', change: Math.round((krRate - krPrev) * 100) / 100, changeUnit: '%p', history: krHistory, live: true };
+      result.kr = { label: '기준금리 (한국)', value: krRate, unit: '%', change: Math.round((krRate - krPrev) * 100) / 100, changeUnit: '%p', history: krHistory, live: true };
     }
-    // 미국 금리: FRED FEDFUNDS CSV (실효 연방기금금리, API 키 불필요)
-    try {
-      const startDate = `${now.getFullYear() - 2}-01-01`;
-      const csv = await fetchText(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=FEDFUNDS&cosd=${startDate}`, 30000);
-      const rows = csv.trim().split('\n').slice(1).map(line => { const [date, val] = line.split(','); return { date, value: parseFloat(val) }; }).filter(r => !isNaN(r.value));
-      if (rows.length > 0) {
-        const usRate = Math.round(rows[rows.length - 1].value * 100) / 100;
-        const usHistory = rows.slice(-8).map(r => Math.round(r.value * 100) / 100);
-        while (usHistory.length < 8) usHistory.unshift(usHistory[0]);
-        const usPrev = usHistory.length >= 2 ? usHistory[usHistory.length - 2] : usRate;
-        fallback.us = { label: '기준금리 (미국)', value: usRate, unit: '%', change: Math.round((usRate - usPrev) * 100) / 100, changeUnit: '%p', history: usHistory, live: true };
-      }
-    } catch (e2) {
-      console.warn('[Collect] 미국 기준금리 FRED 실패:', e2.message);
-    }
-    return fallback;
   } catch (e) {
-    console.warn('[Collect] 기준금리 실패:', e.message);
-    return fallback;
+    console.warn('[Collect] 한국 기준금리 ECOS 실패:', e.message);
   }
+  // 미국 금리: FRED FEDFUNDS CSV (실효 연방기금금리, API 키 불필요)
+  try {
+    const now = new Date();
+    const startDate = `${now.getFullYear() - 2}-01-01`;
+    const csv = await fetchText(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=FEDFUNDS&cosd=${startDate}`, 30000);
+    const rows = csv.trim().split('\n').slice(1).map(line => { const [date, val] = line.split(','); return { date, value: parseFloat(val) }; }).filter(r => !isNaN(r.value));
+    if (rows.length > 0) {
+      const usRate = Math.round(rows[rows.length - 1].value * 100) / 100;
+      const usHistory = rows.slice(-8).map(r => Math.round(r.value * 100) / 100);
+      while (usHistory.length < 8) usHistory.unshift(usHistory[0]);
+      const usPrev = usHistory.length >= 2 ? usHistory[usHistory.length - 2] : usRate;
+      result.us = { label: '기준금리 (미국)', value: usRate, unit: '%', change: Math.round((usRate - usPrev) * 100) / 100, changeUnit: '%p', history: usHistory, live: true };
+    }
+  } catch (e2) {
+    console.warn('[Collect] 미국 기준금리 FRED 실패:', e2.message);
+  }
+  // 둘 다 null이면 null 반환
+  if (!result.kr && !result.us) return null;
+  return result;
 }
 
 // collectFearGreed → lib/collectors.js에서 import
