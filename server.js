@@ -63,7 +63,6 @@ const KoreanSentiment = {
 };
 
 const app = express();
-app.set('trust proxy', true); // Render 등 리버스 프록시 뒤에서 실제 클라이언트 IP 확인
 app.use(cors());
 app.use(express.json());
 
