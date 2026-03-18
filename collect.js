@@ -11,7 +11,7 @@ const path = require('path');
 const { fetchJSON, fetchText, sleep, timeAgo, BROWSER_UA } = require('./lib/utils');
 const {
   getYahooQuote, collectIndices, collectDXY, collectExchangeRates,
-  collectStocks, collectNews, collectCalendar, collectYouTube,
+  collectStocks, collectUSStocks, collectNews, collectCalendar, collectYouTube,
   extractTrends, collectETFs, collectNaverDiscussion, collectUsdKrwChart,
   collectFearGreed,
 } = require('./lib/collectors');
@@ -757,8 +757,10 @@ async function main() {
   const briefing = await getBriefingCached(news);
   const trends = extractTrends(news);
 
-  // Phase 3: 주식 + ETF
+  // Phase 3: 주식 (한국 + 미국) + ETF
   const stocks = await collectStocks({ withFinancials: true, fetchTimeout: CONFIG.FETCH_TIMEOUT });
+  await sleep(2000);
+  const usStocks = await collectUSStocks();
   await sleep(2000);
   const etfs = await collectETFs();
 
@@ -808,7 +810,7 @@ async function main() {
   // 결과 저장 (latest.json CDN fallback: communityPosts 최근 30개만)
   const now = new Date().toISOString();
   const data = {
-    indices, exchangeRates, news, briefing, stocks, etfs, trends, calendar, youtube, sentiments,
+    indices, exchangeRates, news, briefing, stocks, usStocks, etfs, trends, calendar, youtube, sentiments,
     communityPosts: communityPosts.slice(0, CONFIG.COMMUNITY_CDN_POSTS),
     newsSentiment, usdKrwChart, baseRates, dxy, fearGreed,
     updatedAt: now,
@@ -819,6 +821,7 @@ async function main() {
       news: news ? now : null,
       briefing: briefing ? now : null,
       stocks: stocks ? now : null,
+      usStocks: usStocks ? now : null,
       etfs: etfs ? now : null,
       calendar: calendar ? now : null,
       youtube: youtube ? now : null,
