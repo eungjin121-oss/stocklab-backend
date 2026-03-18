@@ -544,7 +544,7 @@ function fallbackBriefing(news) {
     date: `${dateStr} (${dayNames[today.getDay()]})`,
     content: news.slice(0, 5).map(n => n.title + (n.source ? ` (${n.source})` : '')),
     keywords: [...new Set(keywords)].slice(0, 6),
-    live: true,
+    live: false,
   };
 }
 
