@@ -98,5 +98,17 @@
   { "symbol": "BKR", "name": "Baker Hughes", "sector": "Energy", "market": "NASDAQ" },
   { "symbol": "GFS", "name": "GlobalFoundries", "sector": "Semiconductors", "market": "NASDAQ" },
   { "symbol": "COIN", "name": "Coinbase", "sector": "Financial Services", "market": "NASDAQ" },
-  { "symbol": "SMCI", "name": "Super Micro Computer", "sector": "Technology", "market": "NASDAQ" }
+  { "symbol": "SMCI", "name": "Super Micro Computer", "sector": "Technology", "market": "NASDAQ" },
+  { "symbol": "INTC", "name": "Intel", "sector": "Semiconductors", "market": "NASDAQ" },
+  { "symbol": "APP", "name": "AppLovin", "sector": "Technology", "market": "NASDAQ" },
+  { "symbol": "TTWO", "name": "Take-Two Interactive", "sector": "Communication", "market": "NASDAQ" },
+  { "symbol": "CMCSA", "name": "Comcast", "sector": "Communication", "market": "NASDAQ" },
+  { "symbol": "CHTR", "name": "Charter Communications", "sector": "Communication", "market": "NASDAQ" },
+  { "symbol": "AZN", "name": "AstraZeneca", "sector": "Healthcare", "market": "NASDAQ" },
+  { "symbol": "CPRT", "name": "Copart", "sector": "Industrials", "market": "NASDAQ" },
+  { "symbol": "CCEP", "name": "Coca-Cola Europacific", "sector": "Consumer Defensive", "market": "NASDAQ" },
+  { "symbol": "ROP", "name": "Roper Technologies", "sector": "Industrials", "market": "NASDAQ" },
+  { "symbol": "QQQ", "name": "Invesco QQQ ETF", "sector": "ETF", "market": "NASDAQ" },
+  { "symbol": "SOXX", "name": "iShares Semiconductor ETF", "sector": "ETF", "market": "NASDAQ" },
+  { "symbol": "TQQQ", "name": "ProShares UltraPro QQQ", "sector": "ETF", "market": "NASDAQ" }
 ]
