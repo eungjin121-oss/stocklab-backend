@@ -711,9 +711,18 @@ async function getBaseRatesCached() {
       const now = Date.now();
       const dataDir = path.join(__dirname, 'data');
       if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-      fs.writeFileSync(BASE_RATES_CACHE, JSON.stringify({ ...data, _fetchedAt: now }));
-      console.log(`[Collect] 기준금리 수집 성공 (한국: ${data.kr?.value}%, 미국: ${data.us?.value}%)`);
-      return { ...data, _collectedAt: new Date(now).toISOString() };
+      // 기존 캐시와 병합: 한쪽만 수집 성공해도 다른 쪽 데이터 유지
+      let merged = { ...data };
+      try {
+        if (fs.existsSync(BASE_RATES_CACHE)) {
+          const prev = JSON.parse(fs.readFileSync(BASE_RATES_CACHE, 'utf-8'));
+          if (!merged.kr && prev.kr) merged.kr = prev.kr;
+          if (!merged.us && prev.us) merged.us = prev.us;
+        }
+      } catch (e) { /* 캐시 읽기 실패 무시 */ }
+      fs.writeFileSync(BASE_RATES_CACHE, JSON.stringify({ ...merged, _fetchedAt: now }));
+      console.log(`[Collect] 기준금리 수집 성공 (한국: ${merged.kr?.value}%, 미국: ${merged.us?.value}%)`);
+      return { ...merged, _collectedAt: new Date(now).toISOString() };
     }
   } catch (e) {
     console.warn(`[Collect] 기준금리 수집 실패: ${e.message}`);
