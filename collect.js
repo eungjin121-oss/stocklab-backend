@@ -32,6 +32,9 @@ const CONFIG = {
   SLEEP_MS: 500,
   FETCH_TIMEOUT: 12000,
   DC_FETCH_TIMEOUT: 8000,
+  PPOMPPU_POSTS_LIMIT: 15,
+  CLIEN_POSTS_LIMIT: 15,
+  FMKOREA_POSTS_LIMIT: 15,
   FINBERT_BATCH_SIZE: 32,
 };
 
@@ -410,6 +413,128 @@ async function collectDCInsideGallery() {
   }
 }
 
+async function collectPpomppu() {
+  try {
+    const url = 'https://www.ppomppu.co.kr/zboard/zboard.php?id=stock';
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), CONFIG.FETCH_TIMEOUT);
+    const res = await fetch(url, {
+      signal: ctrl.signal,
+      headers: { 'User-Agent': BROWSER_UA, 'Referer': 'https://www.ppomppu.co.kr/' },
+    });
+    clearTimeout(tid);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // EUC-KR 디코딩: arrayBuffer → TextDecoder
+    const buf = await res.arrayBuffer();
+    const html = new TextDecoder('euc-kr').decode(buf);
+    const $ = cheerio.load(html);
+    const posts = [];
+    $('tr.baseList').each((_, row) => {
+      if (posts.length >= CONFIG.PPOMPPU_POSTS_LIMIT) return false;
+      const $row = $(row);
+      // 공지 제외
+      if ($row.hasClass('baseNotice')) return;
+      const titleEl = $row.find('a.baseList-title span');
+      const title = titleEl.text().trim();
+      if (!title) return;
+      const href = $row.find('a.baseList-title').attr('href') || '';
+      const postUrl = href.startsWith('http') ? href : `https://www.ppomppu.co.kr/zboard/${href}`;
+      const author = ($row.find('a.baseList-name span').text().trim() || $row.find('span.baseList-name').text().trim());
+      const timeEl = $row.find('time.baseList-time');
+      const date = timeEl.attr('title') || timeEl.text().trim();
+      const recText = $row.find('td.baseList-rec').text().trim();
+      let likes = 0, dislikes = 0;
+      if (recText.includes('-')) {
+        const parts = recText.split('-').map(s => parseInt(s.trim()) || 0);
+        likes = parts[0]; dislikes = parts[1];
+      }
+      const views = parseInt($row.find('td.baseList-views').text().trim()) || 0;
+      posts.push({ title, url: postUrl, author, date, views, likes, dislikes, source: '뽐뿌', stock: '커뮤니티', live: true });
+    });
+    console.log(`[Collect] 뽐뿌 주식게시판: ${posts.length}건 수집`);
+    return posts;
+  } catch (e) {
+    console.warn('[Collect] 뽐뿌 수집 실패:', e.message);
+    return [];
+  }
+}
+
+async function collectClien() {
+  try {
+    const url = 'https://www.clien.net/service/board/cm_stock';
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), CONFIG.FETCH_TIMEOUT);
+    const res = await fetch(url, {
+      signal: ctrl.signal,
+      headers: { 'User-Agent': BROWSER_UA, 'Referer': 'https://www.clien.net/' },
+    });
+    clearTimeout(tid);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const html = await res.text();
+    const $ = cheerio.load(html);
+    const posts = [];
+    $('div.list_item').each((_, item) => {
+      if (posts.length >= CONFIG.CLIEN_POSTS_LIMIT) return false;
+      const $item = $(item);
+      // 공지 제외
+      if ($item.hasClass('notice') || $item.attr('class')?.includes('notice')) return;
+      const titleEl = $item.find('a.list_subject');
+      const title = titleEl.text().trim().replace(/\s+/g, ' ');
+      if (!title) return;
+      const href = titleEl.attr('href') || '';
+      const postUrl = href.startsWith('http') ? href : `https://www.clien.net${href}`;
+      const author = ($item.find('span.nickname img').attr('alt') || $item.find('span.nickname span').text().trim() || '').trim();
+      const date = ($item.find('span.time span.timestamp').text().trim() || $item.find('span.time').text().trim());
+      const views = parseInt($item.find('span.hit').text().replace(/[^0-9]/g, '')) || 0;
+      posts.push({ title, url: postUrl, author, date, views, likes: 0, dislikes: 0, source: '클리앙', stock: '커뮤니티', live: true });
+    });
+    console.log(`[Collect] 클리앙 주식한당: ${posts.length}건 수집`);
+    return posts;
+  } catch (e) {
+    console.warn('[Collect] 클리앙 수집 실패:', e.message);
+    return [];
+  }
+}
+
+async function collectFMKorea() {
+  try {
+    const url = 'https://www.fmkorea.com/index.php?mid=stock';
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), CONFIG.FETCH_TIMEOUT);
+    const res = await fetch(url, {
+      signal: ctrl.signal,
+      headers: { 'User-Agent': BROWSER_UA, 'Referer': 'https://www.fmkorea.com/' },
+    });
+    clearTimeout(tid);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const html = await res.text();
+    const $ = cheerio.load(html);
+    const posts = [];
+    $('table.bd_lst tbody tr').each((_, row) => {
+      if (posts.length >= CONFIG.FMKOREA_POSTS_LIMIT) return false;
+      const $row = $(row);
+      // 공지 제외
+      if ($row.hasClass('notice') || $row.attr('class')?.includes('notice')) return;
+      const titleA = $row.find('td.title a[href]').first();
+      const title = titleA.text().trim().replace(/\s+/g, ' ');
+      if (!title) return;
+      const href = titleA.attr('href') || '';
+      const postUrl = href.startsWith('http') ? href : `https://www.fmkorea.com${href}`;
+      const author = $row.find('td.author a').text().trim();
+      const date = $row.find('td.time').text().trim();
+      const views = parseInt($row.find('td.m_no').first().text().replace(/[^0-9]/g, '')) || 0;
+      const likes = parseInt($row.find('td.m_no_voted').text().replace(/[^0-9]/g, '')) || 0;
+      const category = $row.find('td.cate a').text().trim();
+      posts.push({ title, url: postUrl, author, date, views, likes, dislikes: 0, source: '에펨코리아', stock: '커뮤니티', category: category || undefined, live: true });
+    });
+    console.log(`[Collect] FM Korea 주식게시판: ${posts.length}건 수집`);
+    return posts;
+  } catch (e) {
+    console.warn('[Collect] FM Korea 수집 실패:', e.message);
+    return [];
+  }
+}
+
 async function collectCommunityPosts() {
   const targets = [
     { name: '삼성전자', code: '005930' }, { name: 'SK하이닉스', code: '000660' },
@@ -438,6 +563,37 @@ async function collectCommunityPosts() {
       console.log(`[Collect] DC 게시글 ${dcPosts.length}건 추가`);
     }
   } catch (e) { console.warn('[Collect] DC 통합 실패:', e.message); }
+
+  // 2단계: 뽐뿌 주식게시판
+  try {
+    const ppPosts = await collectPpomppu();
+    if (ppPosts.length > 0) {
+      allPosts.push(...ppPosts);
+      console.log(`[Collect] 뽐뿌 게시글 ${ppPosts.length}건 추가`);
+    }
+  } catch (e) { console.warn('[Collect] 뽐뿌 통합 실패:', e.message); }
+
+  await sleep(CONFIG.SLEEP_MS);
+
+  // 3단계: 클리앙 주식한당
+  try {
+    const clPosts = await collectClien();
+    if (clPosts.length > 0) {
+      allPosts.push(...clPosts);
+      console.log(`[Collect] 클리앙 게시글 ${clPosts.length}건 추가`);
+    }
+  } catch (e) { console.warn('[Collect] 클리앙 통합 실패:', e.message); }
+
+  await sleep(CONFIG.SLEEP_MS);
+
+  // 4단계: FM Korea 주식게시판
+  try {
+    const fmPosts = await collectFMKorea();
+    if (fmPosts.length > 0) {
+      allPosts.push(...fmPosts);
+      console.log(`[Collect] FM Korea 게시글 ${fmPosts.length}건 추가`);
+    }
+  } catch (e) { console.warn('[Collect] FM Korea 통합 실패:', e.message); }
 
   return { allPosts, stockPostMap, targets };
 }
