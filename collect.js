@@ -575,10 +575,10 @@ async function generateAIBriefing(news) {
           },
           {
             role: 'user',
-            content: `오늘 주요 금융 뉴스 헤드라인:\n${headlines}\n\n위 뉴스를 분석해서 다음 JSON 형식으로 응답해줘:\n{"summary":["핵심 요약 1문장","핵심 요약 2문장","핵심 요약 3문장"], "keywords":["키워드1","키워드2","키워드3","키워드4","키워드5","키워드6"], "sentiment":"bullish 또는 bearish 또는 neutral"}\n\nsummary는 오늘 시장 동향을 3문장으로 요약. keywords는 주요 키워드 6개. sentiment는 전체 시장 분위기.`,
+            content: `오늘 주요 금융 뉴스 헤드라인:\n${headlines}\n\n위 뉴스를 분석해서 다음 JSON 형식으로 응답해줘:\n{"summary":["핵심 요약 1문장","핵심 요약 2문장","핵심 요약 3문장","핵심 요약 4문장","핵심 요약 5문장"], "keywords":["키워드1","키워드2","키워드3","키워드4","키워드5","키워드6"], "sentiment":"bullish 또는 bearish 또는 neutral"}\n\nsummary는 오늘 시장 동향을 5문장으로 요약. keywords는 주요 키워드 6개. sentiment는 전체 시장 분위기.`,
           },
         ],
-        max_tokens: 500,
+        max_tokens: 600,
         temperature: 0.3,
       }),
     });
